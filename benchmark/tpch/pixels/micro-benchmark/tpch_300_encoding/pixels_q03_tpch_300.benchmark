@@ -1,0 +1,4 @@
+template benchmark/tpch/pixels/pixels_encoding_micro_benchmark.benchmark.in
+SF_NUMBER=300
+SF_NUMBER_UNDERSCORE=300
+QUERY_NUMBER_PADDED=03

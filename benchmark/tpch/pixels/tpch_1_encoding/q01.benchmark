@@ -1,0 +1,4 @@
+template benchmark/tpch/pixels/pixels_encoding_tpch_template.benchmark.in
+SF_NUMBER=1
+SF_NUMBER_UNDERSCORE=1
+QUERY_NUMBER_PADDED=01

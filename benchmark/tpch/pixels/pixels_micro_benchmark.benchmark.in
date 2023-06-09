@@ -1,0 +1,22 @@
+# name: benchmark/tpch/parquet/pixels_q${QUERY_NUMBER_PADDED}.benchmark
+# description: Execute Q${QUERY_NUMBER_PADDED} over lineitem stored in a pixels file
+# group: [pixels]
+
+name Q${QUERY_NUMBER_PADDED} (Pixels)
+group pixels
+subgroup tpch
+
+require pixels
+require tpch
+
+load
+CREATE VIEW lineitem AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/lineitem/v-0-order/*.pxl');
+CREATE VIEW nation AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/nation/v-0-order/*.pxl');
+CREATE VIEW region AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/region/v-0-order/*.pxl');
+CREATE VIEW supplier AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/supplier/v-0-order/*.pxl');
+CREATE VIEW customer AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/customer/v-0-order/*.pxl');
+CREATE VIEW part AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/part/v-0-order/*.pxl');
+CREATE VIEW partsupp AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/partsupp/v-0-order/*.pxl');
+CREATE VIEW orders AS SELECT * FROM pixels_scan('/data/s1725-1/liyu/pixels_data/pixels-tpch-${SF_NUMBER_UNDERSCORE}-small-endian/orders/v-0-order/*.pxl');
+
+run benchmark/tpch/micro_benchmark/query/q${QUERY_NUMBER_PADDED}.sql

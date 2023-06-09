@@ -1,0 +1,4 @@
+template benchmark/tpch/pixels/pixels_tpch_template_no_verification.benchmark.in
+SF_NUMBER=300
+SF_NUMBER_UNDERSCORE=300
+QUERY_NUMBER_PADDED=17

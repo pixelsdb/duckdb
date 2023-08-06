@@ -4,4 +4,6 @@ SELECT
     o_orderpriority,
     o_shippriority
 FROM
-    orders;
+    orders
+WHERE
+    o_custkey = 1;

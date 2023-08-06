@@ -7,4 +7,6 @@ SELECT
     l_commitdate,
     l_shipinstruct
 FROM
-    lineitem;
+    lineitem
+WHERE
+    l_partkey = 1;

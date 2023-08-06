@@ -8,4 +8,6 @@ SELECT
     l_receiptdate,
     l_shipmode
 FROM
-    lineitem;
+    lineitem
+WHERE
+    l_orderkey = 1;

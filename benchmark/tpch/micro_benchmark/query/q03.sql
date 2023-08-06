@@ -5,4 +5,5 @@ SELECT
     o_clerk,
     o_comment
 FROM
-    orders;
+    orders
+WHERE o_orderkey = 1;

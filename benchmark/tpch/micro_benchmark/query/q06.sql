@@ -2,4 +2,5 @@ SELECT
     ps_suppkey,
     ps_supplycost
 FROM
-    partsupp;
+    partsupp
+where ps_suppkey = 1;

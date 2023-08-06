@@ -3,4 +3,5 @@ SELECT
     ps_availqty,
     ps_comment
 FROM
-    partsupp;
+    partsupp
+WHERE ps_partkey = 1;

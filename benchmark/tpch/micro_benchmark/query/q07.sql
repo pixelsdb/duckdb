@@ -1,4 +1,6 @@
 SELECT
     *
 FROM
-    part;
+    part
+WHERE
+    p_partkey = 1;

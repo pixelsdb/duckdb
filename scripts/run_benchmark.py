@@ -12,7 +12,7 @@ result_from_page_cache = {}
 
 
 def clean_page_cache():
-    cmd = "sudo /scratch/pixels-external/drop_cache.sh"
+    cmd = "sudo /usr/local/etc/vm-drop_caches.sh"
     if verbose:
         print(cmd)
     os.system(cmd)

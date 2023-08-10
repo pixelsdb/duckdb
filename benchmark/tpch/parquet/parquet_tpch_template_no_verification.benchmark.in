@@ -10,13 +10,13 @@ require parquet
 require tpch
 
 load
-CREATE VIEW lineitem AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/lineitem/*');
-CREATE VIEW nation AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/nation/*');
-CREATE VIEW region AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/region/*');
-CREATE VIEW supplier AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/supplier/*');
-CREATE VIEW customer AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/customer/*');
-CREATE VIEW part AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/part/*');
-CREATE VIEW partsupp AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/partsupp/*');
-CREATE VIEW orders AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/orders/*');
+CREATE VIEW orders AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/orders/*"]);
+CREATE VIEW lineitem AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/lineitem/*"]);
+CREATE VIEW supplier AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/supplier/*"]);
+CREATE VIEW partsupp AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/partsupp/*"]);
+CREATE VIEW region AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/region/*"]);
+CREATE VIEW part AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/part/*"]);
+CREATE VIEW nation AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/nation/*"]);
+CREATE VIEW customer AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/customer/*"]);
 
 run extension/tpch/dbgen/queries/q${QUERY_NUMBER_PADDED}.sql

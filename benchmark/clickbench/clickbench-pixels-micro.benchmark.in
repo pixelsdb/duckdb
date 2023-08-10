@@ -8,7 +8,7 @@ name Q${QUERY_NUMBER_PADDED}
 group Clickbench
 
 load
-CREATE VIEW hits AS SELECT * FROM pixels_scan('/pm1725b-1/liyu/pixels_data/clickbench/v-0-ordered/*.pxl');
+CREATE VIEW hits AS SELECT * FROM pixels_scan(["/nvme1/liyu/pixels-data/clickbench/hits/v-0-ordered/*.pxl"]);
 
 run benchmark/clickbench/queries-micro/q${QUERY_NUMBER_PADDED}.sql
 

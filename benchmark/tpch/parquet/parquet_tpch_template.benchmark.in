@@ -6,18 +6,18 @@ name Q${QUERY_NUMBER_PADDED} (parquet)
 group parquet
 subgroup tpch
 
-require parquet
+require parquet.
 require tpch
 
 load
-CREATE VIEW lineitem AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/lineitem/*');
-CREATE VIEW nation AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/nation/*');
-CREATE VIEW region AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/region/*');
-CREATE VIEW supplier AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/supplier/*');
-CREATE VIEW customer AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/customer/*');
-CREATE VIEW part AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/part/*');
-CREATE VIEW partsupp AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/partsupp/*');
-CREATE VIEW orders AS SELECT * FROM parquet_scan('/data/s1725-1/liyu/parquet_data/parquet-tpch-${SF_NUMBER_UNDERSCORE}g/orders/*');
+CREATE VIEW lineitem AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/lineitem/*');
+CREATE VIEW nation AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/nation/*');
+CREATE VIEW region AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/region/*');
+CREATE VIEW supplier AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/supplier/*');
+CREATE VIEW customer AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/customer/*');
+CREATE VIEW part AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/part/*');
+CREATE VIEW partsupp AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/partsupp/*');
+CREATE VIEW orders AS SELECT * FROM parquet_scan('/nvme1/liyu/parquet-data/tpch-${SF_NUMBER_UNDERSCORE}-encoding/orders/*');
 
 run extension/tpch/dbgen/queries/q${QUERY_NUMBER_PADDED}.sql
 result extension/tpch/dbgen/answers/sf${SF_NUMBER}/q${QUERY_NUMBER_PADDED}.csv

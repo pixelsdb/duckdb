@@ -8,7 +8,7 @@ name Q${QUERY_NUMBER_PADDED}
 group Clickbench
 
 load
-CREATE VIEW hits AS SELECT * FROM parquet_scan('/pm1725b-1/liyu/parquet_data/clickbench/*');
+CREATE VIEW hits AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/clickbench/hits//*"]);
 
 run benchmark/clickbench/queries/q${QUERY_NUMBER_PADDED}.sql
 

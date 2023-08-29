@@ -7,7 +7,7 @@ import shutil
 # input, output and suffix should be designated, while table is detected automatically.
 # For example, we execute the following script:
 # cd pixels-duckdb
-# python scripts/multidir-generator.py -i /data/tpch-300 -o /data1/tpch-300-partition1 /data2/tpch-300-partition2
+# python scripts/parquet-multidir-generator.py -i /data/tpch-300 -o /data1/tpch-300-partition1 /data2/tpch-300-partition2
 # The input path layout is:
 # input:
 #
@@ -45,7 +45,7 @@ def main():
                         help='input path list')
     parser.add_argument('-o', '--output', nargs='+', dest='output', required=True,
                         help='output path list')
-    parser.add_argument('-s', '--suffix', dest='suffix', default="v-0-ordered",
+    parser.add_argument('-s', '--suffix', dest='suffix', default="",
                         help='The suffix path of the input and output path')
     parser.add_argument('-v', dest='verbose', action='store_true', help='output the command')
     args = parser.parse_args()
@@ -67,7 +67,7 @@ def main():
             if os.path.exists(input_dir_suffix):
                 file_names += [(name, input_dir_suffix) for name in os.listdir(input_dir_suffix)]
 
-        file_names.sort(key=lambda x: int(x[0].split('.')[0].split('_')[1]))
+        file_names.sort(key=lambda x: int(x[0].split('_')[0]))
 
         for output_dir in args.output:
             output_dir_suffix = os.path.join(output_dir, table, args.suffix)
@@ -75,7 +75,7 @@ def main():
                 os.makedirs(output_dir_suffix)
             if table not in verbose:
                 verbose[table] = []
-            verbose[table].append('"' + output_dir_suffix + "/*.pxl\"")
+            verbose[table].append('"' + output_dir_suffix + "/*\"")
 
         for i in range(len(file_names)):
             output_dir_index = i % len(args.output)
@@ -95,7 +95,7 @@ def main():
         print('-' * 10 + "Copy the below commands to the benchmark template " + '-' * 10)
         for table, paths in verbose.items():
             path_str = '[' + ','.join(paths) + ']'
-            cmd_prefix = "CREATE VIEW " + table + " AS SELECT * FROM pixels_scan("
+            cmd_prefix = "CREATE VIEW " + table + " AS SELECT * FROM parquet_scan("
             cmd_suffix = ");"
             print(cmd_prefix + path_str + cmd_suffix)
 if __name__ == "__main__":

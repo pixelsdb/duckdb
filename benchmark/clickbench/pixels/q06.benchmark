@@ -1,0 +1,6 @@
+# name: benchmark/clickbench/pixels/q06.benchmark
+# description: Run query 06 from the clickbench benchmark ()
+
+template benchmark/clickbench/clickbench-pixels.benchmark.in
+QUERY_NUMBER=6
+QUERY_NUMBER_PADDED=06

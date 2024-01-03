@@ -1,0 +1,6 @@
+# name: benchmark/clickbench/pixels/q18.benchmark
+# description: Run query 18 from the clickbench benchmark ()
+
+template benchmark/clickbench/clickbench-pixels.benchmark.in
+QUERY_NUMBER=18
+QUERY_NUMBER_PADDED=18

@@ -1,0 +1,6 @@
+# name: benchmark/clickbench/pixels/q39.benchmark
+# description: Run query 39 from the clickbench benchmark ()
+
+template benchmark/clickbench/clickbench-pixels.benchmark.in
+QUERY_NUMBER=39
+QUERY_NUMBER_PADDED=39

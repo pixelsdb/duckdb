@@ -1,0 +1,6 @@
+# name: benchmark/clickbench/parquet/q04.benchmark
+# description: Run query 04 from the clickbench benchmark ()
+
+template benchmark/clickbench/clickbench-parquet.benchmark.in
+QUERY_NUMBER=4
+QUERY_NUMBER_PADDED=04

@@ -1,0 +1,6 @@
+# name: benchmark/clickbench/parquet/q18.benchmark
+# description: Run query 18 from the clickbench benchmark ()
+
+template benchmark/clickbench/clickbench-parquet.benchmark.in
+QUERY_NUMBER=18
+QUERY_NUMBER_PADDED=18

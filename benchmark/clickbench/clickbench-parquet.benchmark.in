@@ -8,7 +8,7 @@ name Q${QUERY_NUMBER_PADDED}
 group Clickbench
 
 load
-CREATE VIEW hits AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/clickbench/hits//*"]);
+CREATE VIEW hits AS SELECT * FROM parquet_scan(["/nvme0/liyu/parquet-data/clickbench/hits/*","/nvme2/liyu/parquet-data/clickbench/hits/*","/nvme3/liyu/parquet-data/clickbench/hits/*","/nvme4/liyu/parquet-data/clickbench/hits/*","/nvme5/liyu/parquet-data/clickbench/hits/*","/nvme6/liyu/parquet-data/clickbench/hits/*","/nvme7/liyu/parquet-data/clickbench/hits/*","/nvme9/liyu/parquet-data/clickbench/hits/*","/nvme10/liyu/parquet-data/clickbench/hits/*","/nvme11/liyu/parquet-data/clickbench/hits/*","/nvme13/liyu/parquet-data/clickbench/hits/*","/nvme14/liyu/parquet-data/clickbench/hits/*","/nvme15/liyu/parquet-data/clickbench/hits/*","/nvme16/liyu/parquet-data/clickbench/hits/*","/nvme17/liyu/parquet-data/clickbench/hits/*","/nvme18/liyu/parquet-data/clickbench/hits/*","/nvme19/liyu/parquet-data/clickbench/hits/*","/nvme20/liyu/parquet-data/clickbench/hits/*","/nvme21/liyu/parquet-data/clickbench/hits/*","/nvme22/liyu/parquet-data/clickbench/hits/*","/nvme23/liyu/parquet-data/clickbench/hits/*","/nvme24/liyu/parquet-data/clickbench/hits/*","/nvme25/liyu/parquet-data/clickbench/hits/*","/nvme26/liyu/parquet-data/clickbench/hits/*"]);
 
 run benchmark/clickbench/queries/q${QUERY_NUMBER_PADDED}.sql
 

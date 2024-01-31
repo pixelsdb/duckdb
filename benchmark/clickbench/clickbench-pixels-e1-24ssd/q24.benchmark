@@ -1,0 +1,2 @@
+template benchmark/clickbench/clickbench-pixels-e1-24ssd.benchmark.in
+QUERY_NUMBER_PADDED=24

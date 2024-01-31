@@ -1,0 +1,13 @@
+# name: ${FILE_PATH}
+# description: ${DESCRIPTION}
+# group: [clickbench]
+
+require pixels
+
+name Q${QUERY_NUMBER_PADDED}
+group Clickbench
+
+load
+CREATE VIEW hits AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/clickbench-e2/hits/*","/nvme2/liyu/parquet-data/clickbench-e2/hits/*","/nvme3/liyu/parquet-data/clickbench-e2/hits/*","/nvme4/liyu/parquet-data/clickbench-e2/hits/*","/nvme5/liyu/parquet-data/clickbench-e2/hits/*","/nvme6/liyu/parquet-data/clickbench-e2/hits/*","/nvme7/liyu/parquet-data/clickbench-e2/hits/*","/nvme9/liyu/parquet-data/clickbench-e2/hits/*","/nvme10/liyu/parquet-data/clickbench-e2/hits/*","/nvme11/liyu/parquet-data/clickbench-e2/hits/*","/nvme14/liyu/parquet-data/clickbench-e2/hits/*","/nvme15/liyu/parquet-data/clickbench-e2/hits/*","/nvme16/liyu/parquet-data/clickbench-e2/hits/*","/nvme17/liyu/parquet-data/clickbench-e2/hits/*","/nvme18/liyu/parquet-data/clickbench-e2/hits/*","/nvme19/liyu/parquet-data/clickbench-e2/hits/*","/nvme20/liyu/parquet-data/clickbench-e2/hits/*","/nvme21/liyu/parquet-data/clickbench-e2/hits/*","/nvme22/liyu/parquet-data/clickbench-e2/hits/*","/nvme23/liyu/parquet-data/clickbench-e2/hits/*","/nvme24/liyu/parquet-data/clickbench-e2/hits/*","/nvme25/liyu/parquet-data/clickbench-e2/hits/*","/nvme26/liyu/parquet-data/clickbench-e2/hits/*","/nvme27/liyu/parquet-data/clickbench-e2/hits/*"]);
+
+run benchmark/clickbench/queries-micro/q${QUERY_NUMBER_PADDED}.sql

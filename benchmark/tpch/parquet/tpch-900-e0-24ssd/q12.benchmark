@@ -1,0 +1,2 @@
+template benchmark/tpch/parquet/tpch-900-e0-24ssd.benchmark.in
+QUERY_NUMBER_PADDED=12

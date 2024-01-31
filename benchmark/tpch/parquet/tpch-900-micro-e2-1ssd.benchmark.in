@@ -1,0 +1,22 @@
+# name: benchmark/tpch/parquet/parquet_q${QUERY_NUMBER_PADDED}.benchmark
+# description: Execute Q${QUERY_NUMBER_PADDED} over lineitem stored in a parquet file
+# group: [parquet]
+
+name Q${QUERY_NUMBER_PADDED} (parquet)
+group parquet
+subgroup tpch
+
+require parquet
+require tpch
+
+load
+CREATE VIEW orders AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/orders/*"]);
+CREATE VIEW customer AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/customer/*"]);
+CREATE VIEW lineitem AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/lineitem/*"]);
+CREATE VIEW supplier AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/supplier/*"]);
+CREATE VIEW partsupp AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/partsupp/*"]);
+CREATE VIEW region AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/region/*"]);
+CREATE VIEW part AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/part/*"]);
+CREATE VIEW nation AS SELECT * FROM parquet_scan(["/nvme31/liyu/parquet-data/tpch-300-e2/nation/*"]);
+
+run benchmark/tpch/micro_benchmark/query/q${QUERY_NUMBER_PADDED}.sql

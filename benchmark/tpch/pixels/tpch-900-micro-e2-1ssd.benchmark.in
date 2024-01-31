@@ -1,0 +1,22 @@
+# name: benchmark/tpch/parquet/pixels_q${QUERY_NUMBER_PADDED}.benchmark
+# description: Execute Q${QUERY_NUMBER_PADDED} over lineitem stored in a pixels file
+# group: [pixels]
+
+name Q${QUERY_NUMBER_PADDED} (Pixels)
+group pixels
+subgroup tpch
+
+require pixels
+require tpch
+
+load
+CREATE VIEW orders AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/orders/v-0-ordered/*"]);
+CREATE VIEW customer AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/customer/v-0-ordered/*"]);
+CREATE VIEW lineitem AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/lineitem/v-0-ordered/*"]);
+CREATE VIEW supplier AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/supplier/v-0-ordered/*"]);
+CREATE VIEW partsupp AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/partsupp/v-0-ordered/*"]);
+CREATE VIEW region AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/region/v-0-ordered/*"]);
+CREATE VIEW part AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/part/v-0-ordered/*"]);
+CREATE VIEW nation AS SELECT * FROM pixels_scan(["/nvme27/liyu/pixels-data/tpch-300-e2/nation/v-0-ordered/*"]);
+
+run benchmark/tpch/micro_benchmark/query/q${QUERY_NUMBER_PADDED}.sql

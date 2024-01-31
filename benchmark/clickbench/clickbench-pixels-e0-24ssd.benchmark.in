@@ -1,0 +1,15 @@
+# name: ${FILE_PATH}
+# description: ${DESCRIPTION}
+# group: [clickbench]
+
+require pixels
+
+name Q${QUERY_NUMBER_PADDED}
+group Clickbench
+
+load
+CREATE VIEW hits AS SELECT * FROM pixels_scan(["/nvme1/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme2/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme3/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme4/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme5/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme6/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme7/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme9/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme10/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme11/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme14/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme15/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme16/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme17/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme18/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme19/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme20/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme21/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme22/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme23/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme24/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme25/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme26/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme27/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*"]);
+
+run benchmark/clickbench/queries/q${QUERY_NUMBER_PADDED}.sql
+
+# result benchmark/clickbench/answers/q${QUERY_NUMBER_PADDED}.csv

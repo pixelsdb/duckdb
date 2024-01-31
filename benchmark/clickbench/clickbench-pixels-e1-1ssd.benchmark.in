@@ -1,0 +1,15 @@
+# name: ${FILE_PATH}
+# description: ${DESCRIPTION}
+# group: [clickbench]
+
+require pixels
+
+name Q${QUERY_NUMBER_PADDED}
+group Clickbench
+
+load
+CREATE VIEW hits AS SELECT * FROM pixels_scan(["/nvme1/liyu/pixels-data/clickbench-e1/hits/v-0-ordered/*"]);
+
+run benchmark/clickbench/queries/q${QUERY_NUMBER_PADDED}.sql
+
+# result benchmark/clickbench/answers/q${QUERY_NUMBER_PADDED}.csv

@@ -1,0 +1,2 @@
+template benchmark/tpch/pixels/tpch-900-micro-e2-1ssd.benchmark.in
+QUERY_NUMBER_PADDED=04

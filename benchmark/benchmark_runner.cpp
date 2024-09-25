@@ -136,7 +136,7 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 					LogOutput("INCORRECT RESULT: " + verify);
 					break;
 				} else {
-					LogResult(std::to_string(profiler.Elapsed()));
+					LogResult("Result: "+std::to_string(profiler.Elapsed()));
 				}
 			}
 		}

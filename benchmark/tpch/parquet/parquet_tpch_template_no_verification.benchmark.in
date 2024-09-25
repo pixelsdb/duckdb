@@ -10,13 +10,13 @@ require parquet
 require tpch
 
 load
-CREATE VIEW orders AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/orders/*"]);
-CREATE VIEW lineitem AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/lineitem/*"]);
-CREATE VIEW supplier AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/supplier/*"]);
-CREATE VIEW partsupp AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/partsupp/*"]);
-CREATE VIEW region AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/region/*"]);
-CREATE VIEW part AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/part/*"]);
-CREATE VIEW nation AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/nation/*"]);
-CREATE VIEW customer AS SELECT * FROM parquet_scan(["/nvme1/liyu/parquet-data/tpch-300-encoding/customer/*"]);
+CREATE VIEW lineitem AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/lineitem/*');
+CREATE VIEW nation AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/nation/*');
+CREATE VIEW region AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/region/*');
+CREATE VIEW supplier AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/supplier/*');
+CREATE VIEW customer AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/customer/*');
+CREATE VIEW part AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/part/*');
+CREATE VIEW partsupp AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/partsupp/*');
+CREATE VIEW orders AS SELECT * FROM parquet_scan('/data/9a3-02/parquet/tpch-300/orders/*');
 
 run extension/tpch/dbgen/queries/q${QUERY_NUMBER_PADDED}.sql

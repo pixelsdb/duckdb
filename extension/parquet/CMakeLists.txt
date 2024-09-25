@@ -6,7 +6,7 @@ include_directories(
   include ../../third_party/parquet ../../third_party/snappy
   ../../third_party/miniz ../../third_party/thrift
   ../../third_party/zstd/include
-  ../../../pixels-common/include)
+        ../../../pixels-common/include)
 
 set(PARQUET_EXTENSION_FILES
     column_writer.cpp

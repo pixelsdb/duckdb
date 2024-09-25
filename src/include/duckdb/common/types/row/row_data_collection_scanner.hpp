@@ -50,6 +50,10 @@ public:
 	RowDataCollectionScanner(RowDataCollection &rows, RowDataCollection &heap, const RowLayout &layout, bool external,
 	                         bool flush = true);
 
+	//	Single block scan
+	RowDataCollectionScanner(RowDataCollection &rows, RowDataCollection &heap, const RowLayout &layout, bool external,
+	                         idx_t block_idx, bool flush);
+
 	//! The type layout of the payload
 	inline const vector<LogicalType> &GetTypes() const {
 		return layout.GetTypes();
@@ -70,12 +74,17 @@ public:
 		return total_count - total_scanned;
 	}
 
+	//! The number of remaining rows
+	inline idx_t BlockIndex() const {
+		return read_state.block_idx;
+	}
+
 	//! Swizzle the blocks for external scanning
 	//! Swizzling is all or nothing, so if we have scanned previously,
 	//! we need to re-swizzle.
 	void ReSwizzle();
 
-	void SwizzleBlock(RowDataBlock &data_block, RowDataBlock &heap_block);
+	void SwizzleBlock(idx_t block_idx);
 
 	//! Scans the next data chunk from the sorted data
 	void Scan(DataChunk &chunk);
@@ -93,7 +102,7 @@ private:
 	//! Read state
 	ScanState read_state;
 	//! The total count of sorted_data
-	const idx_t total_count;
+	idx_t total_count;
 	//! The number of rows scanned so far
 	idx_t total_scanned;
 	//! Addresses used to gather from the sorted data
@@ -105,6 +114,8 @@ private:
 	//! Whether we are unswizzling the blocks
 	const bool unswizzling;
 
+	//! Swizzle a single block
+	void SwizzleBlockInternal(RowDataBlock &data_block, RowDataBlock &heap_block);
 	//! Checks that the newest block is valid
 	void ValidateUnscannedBlock() const;
 };

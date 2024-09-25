@@ -22,8 +22,8 @@ public:
 public:
 	explicit BoundSubqueryExpression(LogicalType return_type);
 
-	bool IsCorrelated() {
-		return binder->correlated_columns.size() > 0;
+	bool IsCorrelated() const {
+		return !binder->correlated_columns.empty();
 	}
 
 	//! The binder used to bind the subquery node
@@ -55,13 +55,10 @@ public:
 
 	string ToString() const override;
 
-	bool Equals(const BaseExpression *other) const override;
+	bool Equals(const BaseExpression &other) const override;
 
-	unique_ptr<Expression> Copy() override;
+	unique_ptr<Expression> Copy() const override;
 
 	bool PropagatesNullValues() const override;
-
-	void Serialize(FieldWriter &writer) const override;
-	static unique_ptr<Expression> Deserialize(ExpressionDeserializationState &state, FieldReader &reader);
 };
 } // namespace duckdb

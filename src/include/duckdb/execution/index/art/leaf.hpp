@@ -8,61 +8,65 @@
 
 #pragma once
 
+#include "duckdb/execution/index/fixed_size_allocator.hpp"
+#include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/art/node.hpp"
-#include "duckdb/storage/meta_block_reader.hpp"
 
 namespace duckdb {
 
-class Leaf : public Node {
+//! There are three types of leaves.
+//! 1. LEAF_INLINED: Inlines a row ID in a Node pointer.
+//! 2. LEAF: Deprecated. A list of Leaf nodes containing row IDs.
+//! 3. Nested leaves indicated by gate nodes. If an ART key contains multiple row IDs, then we use the row IDs as keys
+//! and create a nested ART behind the gate node. As row IDs are always unique, these nested ARTs never contain
+//! duplicates themselves.
+class Leaf {
 public:
-	explicit Leaf();
-	Leaf(Key &value, uint32_t depth, row_t row_id);
-	Leaf(Key &value, uint32_t depth, row_t *row_ids, idx_t num_elements);
-	Leaf(row_t *row_ids, idx_t num_elements, Prefix &prefix);
-	Leaf(row_t row_id, Prefix &prefix);
-	~Leaf();
-
-	//! Get the row ID at idx
-	row_t GetRowId(idx_t idx);
-	//! Get the maximum capacity of the leaf, must not match with its count
-	idx_t GetCapacity() const;
-	//! Returns whether a leaf holds exactly one inlined row ID or multiple row IDs
-	bool IsInlined() const;
-	//! Returns a pointer to all row IDs of the leaf
-	row_t *GetRowIds();
+	static constexpr NType LEAF = NType::LEAF;
+	static constexpr NType INLINED = NType::LEAF_INLINED;
+	static constexpr uint8_t LEAF_SIZE = 4; // Deprecated.
 
 public:
-	static Leaf *New();
-	static Leaf *New(Key &value, uint32_t depth, row_t row_id);
-	static Leaf *New(Key &value, uint32_t depth, row_t *row_ids, idx_t num_elements);
-	static Leaf *New(row_t *row_ids, idx_t num_elements, Prefix &prefix);
-	static Leaf *New(row_t row_id, Prefix &prefix);
-
-	//! Returns the memory size of the leaf
-	idx_t MemorySize(ART &art, const bool &recurse) override;
-	//! Insert a row ID into a leaf
-	void Insert(ART &art, row_t row_id);
-	//! Remove a row ID from a leaf
-	void Remove(ART &art, row_t row_id);
-
-	//! Returns the string representation of a leaf
-	static string ToString(Node *node);
-	//! Merge two NLeaf nodes
-	static void Merge(ART &art, Node *&l_node, Node *&r_node);
-
-	//! Serialize a leaf
-	BlockPointer Serialize(duckdb::MetaBlockWriter &writer);
-	//! Deserialize a leaf
-	void Deserialize(ART &art, duckdb::MetaBlockReader &reader);
+	Leaf() = delete;
+	Leaf(const Leaf &) = delete;
+	Leaf &operator=(const Leaf &) = delete;
 
 private:
-	union {
-		row_t inlined;
-		row_t *ptr;
-	} rowids;
+	uint8_t count;            // Deprecated.
+	row_t row_ids[LEAF_SIZE]; // Deprecated.
+	Node ptr;                 // Deprecated.
 
-private:
-	row_t *Resize(row_t *current_row_ids, uint32_t current_count, idx_t new_capacity);
+public:
+	//! Inline a row ID into a node pointer.
+	static void New(Node &node, const row_t row_id);
+	//! Get a new non-inlined nested leaf node.
+	static void New(ART &art, reference<Node> &node, const unsafe_vector<ARTKey> &row_ids, const idx_t start,
+	                const idx_t count);
+
+	//! Merge two leaves. r_node must be INLINED.
+	static void MergeInlined(ART &art, Node &l_node, Node &r_node);
+
+	//! Insert a row ID into an inlined leaf.
+	static void InsertIntoInlined(ART &art, Node &node, const ARTKey &row_id, idx_t depth, const GateStatus status);
+
+	//! Transforms a deprecated leaf to a nested leaf.
+	static void TransformToNested(ART &art, Node &node);
+	//! Transforms a nested leaf to a deprecated leaf.
+	static void TransformToDeprecated(ART &art, Node &node);
+
+public:
+	//! Frees the linked list of leaves.
+	static void DeprecatedFree(ART &art, Node &node);
+	//! Fills the row_ids vector with the row IDs of this linked list of leaves.
+	//! Never pushes more than max_count row IDs.
+	static bool DeprecatedGetRowIds(ART &art, const Node &node, unsafe_vector<row_t> &row_ids, const idx_t max_count);
+	//! Vacuums the linked list of leaves.
+	static void DeprecatedVacuum(ART &art, Node &node);
+	//! Returns the string representation of the linked list of leaves, if only_verify is true.
+	//! Else, it traverses and verifies the linked list of leaves.
+	static string DeprecatedVerifyAndToString(ART &art, const Node &node, const bool only_verify);
+	//! Count the number of leaves.
+	void DeprecatedVerifyAllocations(ART &art, unordered_map<uint8_t, idx_t> &node_counts) const;
 };
 
 } // namespace duckdb

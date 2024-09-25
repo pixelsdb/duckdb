@@ -4,27 +4,58 @@
 
 using namespace duckdb;
 
-static void TestArrowRoundtrip(const string &query) {
+static void TestArrowRoundtrip(const string &query, bool export_large_buffer = false,
+                               bool loseless_conversion = false) {
 	DuckDB db;
 	Connection con(db);
-
+	if (export_large_buffer) {
+		auto res = con.Query("SET arrow_large_buffer_size=True");
+		REQUIRE(!res->HasError());
+	}
+	if (loseless_conversion) {
+		auto res = con.Query("SET arrow_lossless_conversion = true");
+		REQUIRE(!res->HasError());
+	}
 	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, true));
-	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, false));
+}
+
+static void TestArrowRoundtripStringView(const string &query) {
+	DuckDB db;
+	Connection con(db);
+	auto res = con.Query("SET produce_arrow_string_view=True");
+	REQUIRE(!res->HasError());
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, false));
 }
 
 static void TestParquetRoundtrip(const string &path) {
-	DuckDB db;
-	Connection con(db);
+	DBConfig config;
+	// This needs to be set since this test will be triggered when testing autoloading
+	config.options.allow_unsigned_extensions = true;
 
-	if (ExtensionHelper::LoadExtension(db, "parquet") == ExtensionLoadResult::NOT_LOADED) {
-		FAIL();
-		return;
-	}
+	DuckDB db(nullptr, &config);
+	Connection con(db);
 
 	// run the query
 	auto query = "SELECT * FROM parquet_scan('" + path + "')";
 	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query, true));
 	REQUIRE(ArrowTestHelper::RunArrowComparison(con, query));
+}
+
+TEST_CASE("Test Export Large", "[arrow]") {
+	// Test with Regular Buffer Size
+	TestArrowRoundtrip("SELECT 'bla' FROM range(10000)");
+
+	TestArrowRoundtrip("SELECT 'bla'::BLOB FROM range(10000)");
+
+	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)");
+
+	// Test with Large Buffer Size
+	TestArrowRoundtrip("SELECT 'bla' FROM range(10000)", true);
+
+	TestArrowRoundtrip("SELECT 'bla'::BLOB FROM range(10000)", true);
+
+	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)", true);
 }
 
 TEST_CASE("Test arrow roundtrip", "[arrow]") {
@@ -55,8 +86,89 @@ TEST_CASE("Test arrow roundtrip", "[arrow]") {
 	// FIXME: there seems to be a bug in the enum arrow reader in this test when run with vsize=2
 	return;
 #endif
-	TestArrowRoundtrip("SELECT * EXCLUDE(bit) REPLACE "
-	                   "(interval (1) seconds AS interval, hugeint::DOUBLE as hugeint) FROM test_all_types()");
+	TestArrowRoundtrip("SELECT * EXCLUDE(bit,time_tz, varint) REPLACE "
+	                   "(interval (1) seconds AS interval, hugeint::DOUBLE as hugeint, uhugeint::DOUBLE as uhugeint) "
+	                   "FROM test_all_types()");
+}
+
+TEST_CASE("Test Arrow Extension Types", "[arrow][.]") {
+	// UUID
+	TestArrowRoundtrip("SELECT '2d89ebe6-1e13-47e5-803a-b81c87660b66'::UUID str FROM range(5) tbl(i)", false, true);
+
+	// HUGEINT
+	TestArrowRoundtrip("SELECT '170141183460469231731687303715884105727'::HUGEINT str FROM range(5) tbl(i)", false,
+	                   true);
+
+	// UHUGEINT
+	TestArrowRoundtrip("SELECT '170141183460469231731687303715884105727'::UHUGEINT str FROM range(5) tbl(i)", false,
+	                   true);
+
+	// BIT
+	TestArrowRoundtrip("SELECT '0101011'::BIT str FROM range(5) tbl(i)", false, true);
+
+	// TIME_TZ
+	TestArrowRoundtrip("SELECT '02:30:00+04'::TIMETZ str FROM range(5) tbl(i)", false, true);
+}
+
+TEST_CASE("Test Arrow Extension Types - JSON", "[arrow][.]") {
+	DBConfig config;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	if (!db.ExtensionIsLoaded("json")) {
+		return;
+	}
+
+	// JSON
+	TestArrowRoundtrip("SELECT '{\"name\":\"Pedro\", \"age\":28, \"car\":\"VW Fox\"}'::JSON str FROM range(5) tbl(i)",
+	                   false, true);
+}
+
+TEST_CASE("Test Arrow String View", "[arrow][.]") {
+	// Test Small Strings
+	TestArrowRoundtripStringView("SELECT (i*10^i)::varchar str FROM range(5) tbl(i)");
+
+	// Test Small Strings + Nulls
+	TestArrowRoundtripStringView("SELECT (i*10^i)::varchar str FROM range(5) tbl(i) UNION SELECT NULL");
+
+	// Test Big Strings
+	TestArrowRoundtripStringView("SELECT 'Imaverybigstringmuchbiggerthanfourbytes' str FROM range(5) tbl(i)");
+
+	// Test Big Strings + Nulls
+	TestArrowRoundtripStringView("SELECT 'Imaverybigstringmuchbiggerthanfourbytes'||i::varchar str FROM range(5) "
+	                             "tbl(i) UNION SELECT NULL order by str");
+
+	// Test Mix of Small/Big/NULL Strings
+	TestArrowRoundtripStringView(
+	    "SELECT 'Imaverybigstringmuchbiggerthanfourbytes'||i::varchar str FROM range(10000) tbl(i) UNION "
+	    "SELECT NULL UNION SELECT (i*10^i)::varchar str FROM range(10000) tbl(i)");
+}
+
+TEST_CASE("Test TPCH arrow roundtrip", "[arrow][.]") {
+	DBConfig config;
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+
+	if (!db.ExtensionIsLoaded("tpch")) {
+		return;
+	}
+	con.SendQuery("CALL dbgen(sf=0.5)");
+
+	// REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT * FROM lineitem;", false));
+	// REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT l_orderkey, l_shipdate, l_comment FROM lineitem ORDER BY
+	// l_orderkey DESC;", false)); REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT lineitem FROM lineitem;",
+	// false)); REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT [lineitem] FROM lineitem;", false));
+
+	con.SendQuery("create table lineitem_no_constraint as from lineitem;");
+	con.SendQuery("update lineitem_no_constraint set l_comment=null where l_orderkey%2=0;");
+
+	// REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT * FROM lineitem_no_constraint;", false));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(
+	    con, "SELECT l_orderkey, l_shipdate, l_comment FROM lineitem_no_constraint ORDER BY l_orderkey DESC;", false));
+	REQUIRE(
+	    ArrowTestHelper::RunArrowComparison(con, "SELECT lineitem_no_constraint FROM lineitem_no_constraint;", false));
+	REQUIRE(ArrowTestHelper::RunArrowComparison(con, "SELECT [lineitem_no_constraint] FROM lineitem_no_constraint;",
+	                                            false));
 }
 
 TEST_CASE("Test Parquet Files round-trip", "[arrow][.]") {
@@ -83,7 +195,8 @@ TEST_CASE("Test Parquet Files round-trip", "[arrow][.]") {
 	// data.emplace_back("data/parquet-testing/complex.parquet");
 	data.emplace_back("data/parquet-testing/data-types.parquet");
 	data.emplace_back("data/parquet-testing/date.parquet");
-	data.emplace_back("data/parquet-testing/date_stats.parquet");
+	// arrow can't read this because it's a time with a timezone and it's not supported by arrow
+	//	data.emplace_back("data/parquet-testing/date_stats.parquet");
 	data.emplace_back("data/parquet-testing/decimal_stats.parquet");
 	data.emplace_back("data/parquet-testing/decimals.parquet");
 	data.emplace_back("data/parquet-testing/enum.parquet");

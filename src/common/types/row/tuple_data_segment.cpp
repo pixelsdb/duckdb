@@ -1,10 +1,18 @@
 #include "duckdb/common/types/row/tuple_data_segment.hpp"
 
 #include "duckdb/common/types/row/tuple_data_allocator.hpp"
+#include "duckdb/storage/buffer/buffer_pool.hpp"
 
 namespace duckdb {
 
-TupleDataChunkPart::TupleDataChunkPart() {
+TupleDataChunkPart::TupleDataChunkPart(mutex &lock_p) : lock(lock_p) {
+}
+
+void TupleDataChunkPart::SetHeapEmpty() {
+	heap_block_index = INVALID_INDEX;
+	heap_block_offset = INVALID_INDEX;
+	total_heap_size = 0;
+	base_heap_ptr = nullptr;
 }
 
 void SwapTupleDataChunkPart(TupleDataChunkPart &a, TupleDataChunkPart &b) {
@@ -15,10 +23,10 @@ void SwapTupleDataChunkPart(TupleDataChunkPart &a, TupleDataChunkPart &b) {
 	std::swap(a.base_heap_ptr, b.base_heap_ptr);
 	std::swap(a.total_heap_size, b.total_heap_size);
 	std::swap(a.count, b.count);
-	// Cannot swap the lock, but not needed as move constructor only happens during append, lock only needed for scans
+	std::swap(a.lock, b.lock);
 }
 
-TupleDataChunkPart::TupleDataChunkPart(TupleDataChunkPart &&other) noexcept {
+TupleDataChunkPart::TupleDataChunkPart(TupleDataChunkPart &&other) noexcept : lock((other.lock)) {
 	SwapTupleDataChunkPart(*this, other);
 }
 
@@ -27,7 +35,8 @@ TupleDataChunkPart &TupleDataChunkPart::operator=(TupleDataChunkPart &&other) no
 	return *this;
 }
 
-TupleDataChunk::TupleDataChunk() : count(0) {
+TupleDataChunk::TupleDataChunk() : count(0), lock(make_unsafe_uniq<mutex>()) {
+	parts.reserve(2);
 }
 
 static inline void SwapTupleDataChunk(TupleDataChunk &a, TupleDataChunk &b) noexcept {
@@ -35,6 +44,7 @@ static inline void SwapTupleDataChunk(TupleDataChunk &a, TupleDataChunk &b) noex
 	std::swap(a.row_block_ids, b.row_block_ids);
 	std::swap(a.heap_block_ids, b.heap_block_ids);
 	std::swap(a.count, b.count);
+	std::swap(a.lock, b.lock);
 }
 
 TupleDataChunk::TupleDataChunk(TupleDataChunk &&other) noexcept {
@@ -52,6 +62,7 @@ void TupleDataChunk::AddPart(TupleDataChunkPart &&part, const TupleDataLayout &l
 	if (!layout.AllConstant() && part.total_heap_size > 0) {
 		heap_block_ids.insert(part.heap_block_index);
 	}
+	part.lock = *lock;
 	parts.emplace_back(std::move(part));
 }
 
@@ -98,20 +109,28 @@ void TupleDataChunk::MergeLastChunkPart(const TupleDataLayout &layout) {
 }
 
 TupleDataSegment::TupleDataSegment(shared_ptr<TupleDataAllocator> allocator_p)
-    : allocator(std::move(allocator_p)), count(0) {
+    : allocator(std::move(allocator_p)), count(0), data_size(0) {
 }
 
 TupleDataSegment::~TupleDataSegment() {
 	lock_guard<mutex> guard(pinned_handles_lock);
+	if (allocator) {
+		allocator->SetDestroyBufferUponUnpin(); // Prevent blocks from being added to eviction queue
+	}
 	pinned_row_handles.clear();
 	pinned_heap_handles.clear();
-	allocator = nullptr;
+	if (Allocator::SupportsFlush() && allocator &&
+	    data_size > allocator->GetBufferManager().GetBufferPool().GetAllocatorBulkDeallocationFlushThreshold()) {
+		Allocator::FlushAll();
+	}
+	allocator.reset();
 }
 
 void SwapTupleDataSegment(TupleDataSegment &a, TupleDataSegment &b) {
 	std::swap(a.allocator, b.allocator);
 	std::swap(a.chunks, b.chunks);
 	std::swap(a.count, b.count);
+	std::swap(a.data_size, b.data_size);
 	std::swap(a.pinned_row_handles, b.pinned_row_handles);
 	std::swap(a.pinned_heap_handles, b.pinned_heap_handles);
 }
@@ -130,17 +149,7 @@ idx_t TupleDataSegment::ChunkCount() const {
 }
 
 idx_t TupleDataSegment::SizeInBytes() const {
-	const auto &layout = allocator->GetLayout();
-	idx_t total_size = 0;
-	for (const auto &chunk : chunks) {
-		total_size += chunk.count * layout.GetRowWidth();
-		if (!layout.AllConstant()) {
-			for (const auto &part : chunk.parts) {
-				total_size += part.total_heap_size;
-			}
-		}
-	}
-	return total_size;
+	return data_size;
 }
 
 void TupleDataSegment::Unpin() {
@@ -151,12 +160,23 @@ void TupleDataSegment::Unpin() {
 
 void TupleDataSegment::Verify() const {
 #ifdef DEBUG
+	const auto &layout = allocator->GetLayout();
+
 	idx_t total_count = 0;
+	idx_t total_size = 0;
 	for (const auto &chunk : chunks) {
 		chunk.Verify();
 		total_count += chunk.count;
+
+		total_size += chunk.count * layout.GetRowWidth();
+		if (!layout.AllConstant()) {
+			for (const auto &part : chunk.parts) {
+				total_size += part.total_heap_size;
+			}
+		}
 	}
 	D_ASSERT(total_count == this->count);
+	D_ASSERT(total_size == this->data_size);
 #endif
 }
 

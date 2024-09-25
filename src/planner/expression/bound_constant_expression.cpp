@@ -1,5 +1,4 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/common/field_writer.hpp"
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 
@@ -14,11 +13,11 @@ string BoundConstantExpression::ToString() const {
 	return value.ToSQLString();
 }
 
-bool BoundConstantExpression::Equals(const BaseExpression *other_p) const {
+bool BoundConstantExpression::Equals(const BaseExpression &other_p) const {
 	if (!Expression::Equals(other_p)) {
 		return false;
 	}
-	auto &other = other_p->Cast<BoundConstantExpression>();
+	auto &other = other_p.Cast<BoundConstantExpression>();
 	return value.type() == other.value.type() && !ValueOperations::DistinctFrom(value, other.value);
 }
 
@@ -27,20 +26,10 @@ hash_t BoundConstantExpression::Hash() const {
 	return CombineHash(value.Hash(), result);
 }
 
-unique_ptr<Expression> BoundConstantExpression::Copy() {
+unique_ptr<Expression> BoundConstantExpression::Copy() const {
 	auto copy = make_uniq<BoundConstantExpression>(value);
 	copy->CopyProperties(*this);
 	return std::move(copy);
-}
-
-void BoundConstantExpression::Serialize(FieldWriter &writer) const {
-	value.Serialize(writer.GetSerializer());
-}
-
-unique_ptr<Expression> BoundConstantExpression::Deserialize(ExpressionDeserializationState &state,
-                                                            FieldReader &reader) {
-	auto value = Value::Deserialize(reader.GetSource());
-	return make_uniq<BoundConstantExpression>(value);
 }
 
 } // namespace duckdb

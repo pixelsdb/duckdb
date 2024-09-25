@@ -7,48 +7,74 @@
 //===----------------------------------------------------------------------===//
 
 #pragma once
+
+#include "duckdb/execution/index/fixed_size_allocator.hpp"
+#include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/art/node.hpp"
-#include "duckdb/execution/index/art/swizzleable_pointer.hpp"
 
 namespace duckdb {
 
-class Node256 : public Node {
-public:
-	//! Empty Node256
-	explicit Node256();
-	//! ART pointers to the child nodes
-	ARTPointer children[256];
+//! Node256 holds up to 256 children. They are indexed by their key byte.
+class Node256 {
+	friend class Node48;
 
 public:
-	static Node256 *New();
-	//! Returns the memory size of the Node256
-	idx_t MemorySize(ART &art, const bool &recurse) override;
-	//! Get position of a specific byte, returns DConstants::INVALID_INDEX if not exists
-	idx_t GetChildPos(uint8_t k) override;
-	//! Get the position of the first child that is greater or equal to the specific byte, or DConstants::INVALID_INDEX
-	//! if there are no children matching the criteria
-	idx_t GetChildGreaterEqual(uint8_t k, bool &equal) override;
-	//! Get the position of the minimum element in the node
-	idx_t GetMin() override;
-	//! Get the next position in the node, or DConstants::INVALID_INDEX if there is no next position
-	idx_t GetNextPos(idx_t pos) override;
-	//! Get the next position in the node, or DConstants::INVALID_INDEX if there is no next position
-	idx_t GetNextPosAndByte(idx_t pos, uint8_t &byte) override;
-	//! Get Node256 child
-	Node *GetChild(ART &art, idx_t pos) override;
-	//! Replace child pointer
-	void ReplaceChildPointer(idx_t pos, Node *node) override;
-	//! Returns whether the child at pos is in memory
-	bool ChildIsInMemory(idx_t pos) override;
+	static constexpr NType NODE_256 = NType::NODE_256;
+	static constexpr uint16_t CAPACITY = 256;
+	static constexpr uint8_t SHRINK_THRESHOLD = 36;
 
-	//! Insert a new child node at key_byte into the Node256
-	static void InsertChild(ART &art, Node *&node, uint8_t key_byte, Node *new_child);
-	//! Erase the child at pos and (if necessary) shrink to Node48
-	static void EraseChild(ART &art, Node *&node, idx_t pos);
+public:
+	Node256() = delete;
+	Node256(const Node256 &) = delete;
+	Node256 &operator=(const Node256 &) = delete;
 
-	//! Returns the size (maximum capacity) of the Node256
-	static constexpr idx_t GetSize() {
-		return 256;
+private:
+	uint16_t count;
+	Node children[CAPACITY];
+
+public:
+	//! Get a new Node256 and initialize it.
+	static Node256 &New(ART &art, Node &node);
+	//! Free the node and its children.
+	static void Free(ART &art, Node &node);
+
+	//! Insert a child at byte.
+	static void InsertChild(ART &art, Node &node, const uint8_t byte, const Node child);
+	//! Delete the child at byte.
+	static void DeleteChild(ART &art, Node &node, const uint8_t byte);
+	//! Replace the child at byte.
+	void ReplaceChild(const uint8_t byte, const Node child);
+
+public:
+	template <class F, class NODE>
+	static void Iterator(NODE &n, F &&lambda) {
+		for (idx_t i = 0; i < CAPACITY; i++) {
+			if (n.children[i].HasMetadata()) {
+				lambda(n.children[i]);
+			}
+		}
 	}
+
+	template <class NODE>
+	static unsafe_optional_ptr<Node> GetChild(NODE &n, const uint8_t byte) {
+		if (n.children[byte].HasMetadata()) {
+			return &n.children[byte];
+		}
+		return nullptr;
+	}
+
+	template <class NODE>
+	static unsafe_optional_ptr<Node> GetNextChild(NODE &n, uint8_t &byte) {
+		for (idx_t i = byte; i < CAPACITY; i++) {
+			if (n.children[i].HasMetadata()) {
+				byte = UnsafeNumericCast<uint8_t>(i);
+				return &n.children[i];
+			}
+		}
+		return nullptr;
+	}
+
+private:
+	static Node256 &GrowNode48(ART &art, Node &node256, Node &node48);
 };
 } // namespace duckdb

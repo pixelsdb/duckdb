@@ -9,27 +9,32 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/enums/filter_propagate_result.hpp"
+#include "duckdb/common/mutex.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/unordered_map.hpp"
-#include "duckdb/common/enums/filter_propagate_result.hpp"
+#include "duckdb/planner/column_binding.hpp"
 
 namespace duckdb {
 class BaseStatistics;
-class FieldWriter;
-class FieldReader;
+class Expression;
+class PhysicalOperator;
+class PhysicalTableScan;
 
 enum class TableFilterType : uint8_t {
 	CONSTANT_COMPARISON = 0, // constant comparison (e.g. =C, >C, >=C, <C, <=C)
 	IS_NULL = 1,
 	IS_NOT_NULL = 2,
 	CONJUNCTION_OR = 3,
-	CONJUNCTION_AND = 4
+	CONJUNCTION_AND = 4,
+	STRUCT_EXTRACT = 5
 };
 
 //! TableFilter represents a filter pushed down into the table scan.
 class TableFilter {
 public:
-	TableFilter(TableFilterType filter_type_p) : filter_type(filter_type_p) {
+	explicit TableFilter(TableFilterType filter_type_p) : filter_type(filter_type_p) {
 	}
 	virtual ~TableFilter() {
 	}
@@ -40,13 +45,31 @@ public:
 	//! Returns true if the statistics indicate that the segment can contain values that satisfy that filter
 	virtual FilterPropagateResult CheckStatistics(BaseStatistics &stats) = 0;
 	virtual string ToString(const string &column_name) = 0;
+	virtual unique_ptr<TableFilter> Copy() const = 0;
 	virtual bool Equals(const TableFilter &other) const {
 		return filter_type != other.filter_type;
 	}
+	virtual unique_ptr<Expression> ToExpression(const Expression &column) const = 0;
 
-	void Serialize(Serializer &serializer) const;
-	virtual void Serialize(FieldWriter &writer) const = 0;
-	static unique_ptr<TableFilter> Deserialize(Deserializer &source);
+	virtual void Serialize(Serializer &serializer) const;
+	static unique_ptr<TableFilter> Deserialize(Deserializer &deserializer);
+
+public:
+	template <class TARGET>
+	TARGET &Cast() {
+		if (filter_type != TARGET::TYPE) {
+			throw InternalException("Failed to cast table to type - table filter type mismatch");
+		}
+		return reinterpret_cast<TARGET &>(*this);
+	}
+
+	template <class TARGET>
+	const TARGET &Cast() const {
+		if (filter_type != TARGET::TYPE) {
+			throw InternalException("Failed to cast table to type - table filter type mismatch");
+		}
+		return reinterpret_cast<const TARGET &>(*this);
+	}
 };
 
 class TableFilterSet {
@@ -54,7 +77,7 @@ public:
 	unordered_map<idx_t, unique_ptr<TableFilter>> filters;
 
 public:
-	void PushFilter(idx_t table_index, unique_ptr<TableFilter> filter);
+	void PushFilter(idx_t column_index, unique_ptr<TableFilter> filter);
 
 	bool Equals(TableFilterSet &other) {
 		if (filters.size() != other.filters.size()) {
@@ -82,7 +105,21 @@ public:
 	}
 
 	void Serialize(Serializer &serializer) const;
-	static unique_ptr<TableFilterSet> Deserialize(Deserializer &source);
+	static TableFilterSet Deserialize(Deserializer &deserializer);
+};
+
+class DynamicTableFilterSet {
+public:
+	void ClearFilters(const PhysicalOperator &op);
+	void PushFilter(const PhysicalOperator &op, idx_t column_index, unique_ptr<TableFilter> filter);
+
+	bool HasFilters() const;
+	unique_ptr<TableFilterSet> GetFinalTableFilters(const PhysicalTableScan &scan,
+	                                                optional_ptr<TableFilterSet> existing_filters) const;
+
+private:
+	mutable mutex lock;
+	reference_map_t<const PhysicalOperator, unique_ptr<TableFilterSet>> filters;
 };
 
 } // namespace duckdb

@@ -31,4 +31,12 @@ ClientContext &CatalogTransaction::GetContext() {
 	return *context;
 }
 
+CatalogTransaction CatalogTransaction::GetSystemCatalogTransaction(ClientContext &context) {
+	return CatalogTransaction(Catalog::GetSystemCatalog(context), context);
+}
+
+CatalogTransaction CatalogTransaction::GetSystemTransaction(DatabaseInstance &db) {
+	return CatalogTransaction(db, 1, 1);
+}
+
 } // namespace duckdb

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/main/query_result.hpp"
 #include "duckdb/common/enums/statement_type.hpp"
 
 namespace duckdb {
@@ -16,6 +17,9 @@ class PreparedStatementData;
 
 //! PhysicalResultCollector is an abstract class that is used to generate the final result of a query
 class PhysicalResultCollector : public PhysicalOperator {
+public:
+	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::RESULT_COLLECTOR;
+
 public:
 	explicit PhysicalResultCollector(PreparedStatementData &data);
 
@@ -41,6 +45,12 @@ public:
 
 	bool IsSource() const override {
 		return true;
+	}
+
+public:
+	//! Whether this is a streaming result collector
+	virtual bool IsStreaming() const {
+		return false;
 	}
 };
 

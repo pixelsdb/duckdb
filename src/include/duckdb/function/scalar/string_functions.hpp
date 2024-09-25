@@ -9,21 +9,17 @@
 #pragma once
 
 #include "duckdb/function/function_set.hpp"
-#include "utf8proc.hpp"
+#include "utf8proc_wrapper.hpp"
 #include "duckdb/function/built_in_functions.hpp"
 
-namespace re2 {
+namespace duckdb_re2 {
 class RE2;
 }
 
 namespace duckdb {
 
-struct ReverseFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
 struct LowerFun {
-	static uint8_t ascii_to_lower_map[];
+	static const uint8_t ASCII_TO_LOWER_MAP[];
 
 	//! Returns the length of the result string obtained from lowercasing the given input (in bytes)
 	static idx_t LowerLength(const char *input_data, idx_t input_length);
@@ -35,7 +31,7 @@ struct LowerFun {
 };
 
 struct UpperFun {
-	static uint8_t ascii_to_upper_map[];
+	static const uint8_t ASCII_TO_UPPER_MAP[];
 
 	static void RegisterFunction(BuiltinFunctions &set);
 };
@@ -47,6 +43,11 @@ struct StripAccentsFun {
 };
 
 struct ConcatFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+	static ScalarFunction GetFunction();
+};
+
+struct ConcatWSFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -73,51 +74,28 @@ struct LengthFun {
 		auto input_length = input.GetSize();
 		for (idx_t i = 0; i < input_length; i++) {
 			if (input_data[i] & 0x80) {
-				int64_t length = 0;
 				// non-ascii character: use grapheme iterator on remainder of string
-				utf8proc_grapheme_callback(input_data, input_length, [&](size_t start, size_t end) {
-					length++;
-					return true;
-				});
-				return length;
+				return UnsafeNumericCast<TR>(Utf8Proc::GraphemeCount(input_data, input_length));
 			}
 		}
-		return input_length;
+		return UnsafeNumericCast<TR>(input_length);
 	}
 };
 
 struct LikeFun {
+	static ScalarFunction GetLikeFunction();
 	static void RegisterFunction(BuiltinFunctions &set);
 	DUCKDB_API static bool Glob(const char *s, idx_t slen, const char *pattern, idx_t plen,
 	                            bool allow_question_mark = true);
 };
 
 struct LikeEscapeFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct LpadFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct LeftFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct MD5Fun {
+	static ScalarFunction GetLikeEscapeFun();
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
 struct NFCNormalizeFun {
 	static ScalarFunction GetFunction();
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct RightFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct RegexpFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -127,32 +105,8 @@ struct SubstringFun {
 	static string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64_t length);
 };
 
-struct PrintfFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct InstrFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
 struct PrefixFun {
 	static ScalarFunction GetFunction();
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct RepeatFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct ReplaceFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct TranslateFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct RpadFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -161,63 +115,16 @@ struct SuffixFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
-struct TrimFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
 struct ContainsFun {
-	static ScalarFunction GetFunction();
+	static ScalarFunctionSet GetFunctions();
+	static ScalarFunction GetStringContains();
 	static void RegisterFunction(BuiltinFunctions &set);
 	static idx_t Find(const string_t &haystack, const string_t &needle);
 	static idx_t Find(const unsigned char *haystack, idx_t haystack_size, const unsigned char *needle,
 	                  idx_t needle_size);
 };
 
-struct StartsWithFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct UnicodeFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct StringSplitFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct BarFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct ASCII {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct CHR {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct MismatchesFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct LevenshteinFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct DamerauLevenshteinFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct JaccardFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct JaroWinklerFun {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct HexFun {
+struct RegexpFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 

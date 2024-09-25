@@ -50,7 +50,7 @@ function get_validity(chunk::DataChunk, col_idx::Int64)::ValidityMask
 end
 
 function all_valid(chunk::DataChunk, col_idx::Int64)
-    return all_valid(get_vector(chunk, col_idx))
+    return all_valid(get_vector(chunk, col_idx), get_size(chunk))
 end
 
 # this is only required when we own the data chunk
@@ -59,4 +59,8 @@ function _destroy_data_chunk(chunk::DataChunk)
         duckdb_destroy_data_chunk(chunk.handle)
     end
     return chunk.handle = C_NULL
+end
+
+function destroy_data_chunk(chunk::DataChunk)
+    return _destroy_data_chunk(chunk)
 end

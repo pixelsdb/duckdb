@@ -17,8 +17,7 @@ namespace duckdb {
 class StructColumnData : public ColumnData {
 public:
 	StructColumnData(BlockManager &block_manager, DataTableInfo &info, idx_t column_index, idx_t start_row,
-	                 LogicalType type, ColumnData *parent = nullptr);
-	StructColumnData(ColumnData &original, idx_t start_row, ColumnData *parent = nullptr);
+	                 LogicalType type, optional_ptr<ColumnData> parent = nullptr);
 
 	//! The sub-columns of the struct
 	vector<unique_ptr<ColumnData>> sub_columns;
@@ -26,14 +25,17 @@ public:
 	ValidityColumnData validity;
 
 public:
-	bool CheckZonemap(ColumnScanState &state, TableFilter &filter) override;
+	void SetStart(idx_t new_start) override;
 	idx_t GetMaxEntry() override;
 
+	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) override;
 	void InitializeScan(ColumnScanState &state) override;
 	void InitializeScanWithOffset(ColumnScanState &state, idx_t row_idx) override;
 
-	idx_t Scan(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result) override;
-	idx_t ScanCommitted(idx_t vector_index, ColumnScanState &state, Vector &result, bool allow_updates) override;
+	idx_t Scan(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
+	           idx_t scan_count) override;
+	idx_t ScanCommitted(idx_t vector_index, ColumnScanState &state, Vector &result, bool allow_updates,
+	                    idx_t scan_count) override;
 	idx_t ScanCount(ColumnScanState &state, Vector &result, idx_t count) override;
 
 	void Skip(ColumnScanState &state, idx_t count = STANDARD_VECTOR_SIZE) override;
@@ -54,12 +56,14 @@ public:
 
 	unique_ptr<ColumnCheckpointState> CreateCheckpointState(RowGroup &row_group,
 	                                                        PartialBlockManager &partial_block_manager) override;
-	unique_ptr<ColumnCheckpointState> Checkpoint(RowGroup &row_group, PartialBlockManager &partial_block_manager,
-	                                             ColumnCheckpointInfo &checkpoint_info) override;
+	unique_ptr<ColumnCheckpointState> Checkpoint(RowGroup &row_group, ColumnCheckpointInfo &info) override;
 
-	void DeserializeColumn(Deserializer &source) override;
+	bool IsPersistent() override;
+	PersistentColumnData Serialize() override;
+	void InitializeColumn(PersistentColumnData &column_data, BaseStatistics &target_stats) override;
 
-	void GetStorageInfo(idx_t row_group_index, vector<idx_t> col_path, TableStorageInfo &result) override;
+	void GetColumnSegmentInfo(duckdb::idx_t row_group_index, vector<duckdb::idx_t> col_path,
+	                          vector<duckdb::ColumnSegmentInfo> &result) override;
 
 	void Verify(RowGroup &parent) override;
 };

@@ -9,13 +9,13 @@
 #pragma once
 
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/common/types/hyperloglog.hpp"
-#include "duckdb/storage/statistics/base_statistics.hpp"
 
 namespace duckdb {
+class Vector;
 class Serializer;
 class Deserializer;
-class Vector;
 
 class DistinctStatistics {
 public:
@@ -34,12 +34,6 @@ public:
 
 	unique_ptr<DistinctStatistics> Copy() const;
 
-	void Serialize(Serializer &serializer) const;
-	void Serialize(FieldWriter &writer) const;
-
-	static unique_ptr<DistinctStatistics> Deserialize(Deserializer &source);
-	static unique_ptr<DistinctStatistics> Deserialize(FieldReader &reader);
-
 	void Update(Vector &update, idx_t count, bool sample = true);
 	void Update(UnifiedVectorFormat &update_data, const LogicalType &ptype, idx_t count, bool sample = true);
 
@@ -48,9 +42,18 @@ public:
 
 	static bool TypeIsSupported(const LogicalType &type);
 
+	void Serialize(Serializer &serializer) const;
+	static unique_ptr<DistinctStatistics> Deserialize(Deserializer &deserializer);
+
 private:
 	//! For distinct statistics we sample the input to speed up insertions
-	static constexpr const double SAMPLE_RATE = 0.1;
+	static constexpr double BASE_SAMPLE_RATE = 0.1;
+	//! For integers, we sample more: likely to be join keys (and hashing is cheaper than, e.g., strings)
+	static constexpr double INTEGRAL_SAMPLE_RATE = 0.3;
+	//! For concurrent access
+	mutable mutex lock;
+	//! Preallocated vector for hashes
+	Vector hash_vec;
 };
 
 } // namespace duckdb

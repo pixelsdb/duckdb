@@ -16,11 +16,11 @@ namespace duckdb {
 class ValidityColumnData : public ColumnData {
 public:
 	ValidityColumnData(BlockManager &block_manager, DataTableInfo &info, idx_t column_index, idx_t start_row,
-	                   ColumnData *parent);
-	ValidityColumnData(ColumnData &original, idx_t start_row, ColumnData *parent = nullptr);
+	                   ColumnData &parent);
 
 public:
-	bool CheckZonemap(ColumnScanState &state, TableFilter &filter) override;
+	FilterPropagateResult CheckZonemap(ColumnScanState &state, TableFilter &filter) override;
+	void AppendData(BaseStatistics &stats, ColumnAppendState &state, UnifiedVectorFormat &vdata, idx_t count) override;
 };
 
 } // namespace duckdb

@@ -73,6 +73,8 @@
 #if FMT_HAS_CPP_ATTRIBUTE(fallthrough) && \
     (__cplusplus >= 201703 || FMT_GCC_VERSION != 0)
 #  define FMT_FALLTHROUGH [[fallthrough]]
+#elif defined(DUCKDB_EXPLICIT_FALLTHROUGH)
+#  define FMT_FALLTHROUGH DUCKDB_EXPLICIT_FALLTHROUGH
 #else
 #  define FMT_FALLTHROUGH
 #endif
@@ -951,6 +953,7 @@ template <typename Char> struct basic_format_specs {
   sign_t sign : 3;
   bool alt : 1;  // Alternate form ('#').
   internal::fill_t<Char> fill;
+  char thousands;
 
   constexpr basic_format_specs()
       : width(0),
@@ -959,7 +962,8 @@ template <typename Char> struct basic_format_specs {
         align(align::none),
         sign(sign::none),
         alt(false),
-        fill(internal::fill_t<Char>::make()) {}
+        fill(internal::fill_t<Char>::make()),
+        thousands('\0'){}
 };
 
 using format_specs = basic_format_specs<char>;
@@ -978,6 +982,7 @@ struct float_specs {
   int precision;
   float_format format : 8;
   sign_t sign : 8;
+  char thousand_sep : 8;
   bool upper : 1;
   bool locale : 1;
   bool percent : 1;
@@ -1034,8 +1039,33 @@ template <typename Char> class float_writer {
     }
     if (num_digits_ <= full_exp) {
       // 1234e7 -> 12340000000[.0+]
-      it = copy_str<Char>(digits_, digits_ + num_digits_, it);
-      it = std::fill_n(it, full_exp - num_digits_, static_cast<Char>('0'));
+      if (specs_.thousand_sep != '\0' && full_exp > 3) {
+        // thousand separator
+        // we need to print the thousand separator every 3 digits
+        // the loop is essentially write 3 digits, write the thousand separator
+        // the exception is the first batch of digits which are 1-3 digits
+        int digit_count = full_exp % 3 == 0 ? 3 : full_exp % 3;
+        for(int i = 0; i < full_exp; i += digit_count, digit_count = 3) {
+          if (i > 0) {
+            *it++ = specs_.thousand_sep;
+          }
+          if (i < num_digits_) {
+            // we still need to write digits
+            int write_count = std::min<int>(num_digits_ - i, digit_count);
+            it = copy_str<Char>(digits_ + i, digits_ + i + write_count, it);
+            if (write_count < digit_count) {
+              // write any trailing zeros that belong to this batch
+              it = std::fill_n(it, digit_count - write_count, static_cast<Char>('0'));
+            }
+          } else {
+            // we only need to write trailing zeros
+            it = std::fill_n(it, digit_count, static_cast<Char>('0'));
+          }
+        }
+      } else {
+        it = copy_str<Char>(digits_, digits_ + num_digits_, it);
+        it = std::fill_n(it, full_exp - num_digits_, static_cast<Char>('0'));
+      }
       if (specs_.trailing_zeros) {
         *it++ = decimal_point_;
         int num_zeros = specs_.precision - full_exp;
@@ -1052,7 +1082,21 @@ template <typename Char> class float_writer {
       }
     } else if (full_exp > 0) {
       // 1234e-2 -> 12.34[0+]
-      it = copy_str<Char>(digits_, digits_ + full_exp, it);
+      if (specs_.thousand_sep != '\0' && full_exp > 3) {
+        // thousand separator
+        // we need to print the thousand separator every 3 digits
+        // the loop is essentially write 3 digits, write the thousand separator
+        // the exception is the first batch of digits which are 1-3 digits
+        int digit_count = full_exp % 3 == 0 ? 3 : full_exp % 3;
+        for(int i = 0; i < full_exp; i += digit_count, digit_count = 3) {
+          if (i > 0) {
+            *it++ = specs_.thousand_sep;
+          }
+          it = copy_str<Char>(digits_ + i, digits_ + i + digit_count, it);
+        }
+      } else {
+        it = copy_str<Char>(digits_, digits_ + full_exp, it);
+      }
       if (!specs_.trailing_zeros) {
         // Remove trailing zeros.
         int num_digits = num_digits_;
@@ -1072,7 +1116,7 @@ template <typename Char> class float_writer {
       // 1234e-6 -> 0.001234
       *it++ = static_cast<Char>('0');
       int num_zeros = -full_exp;
-      if (specs_.precision >= 0 && specs_.precision < num_zeros)
+      if (num_digits_ == 0 && specs_.precision >= 0 && specs_.precision < num_zeros)
         num_zeros = specs_.precision;
       int num_digits = num_digits_;
       if (!specs_.trailing_zeros)
@@ -1124,9 +1168,13 @@ int snprintf_float(T value, int precision, float_specs specs,
 template <typename T> T promote_float(T value) { return value; }
 inline double promote_float(float value) { return value; }
 
-template <typename Handler>
-FMT_CONSTEXPR void handle_int_type_spec(char spec, Handler&& handler) {
-  switch (spec) {
+template <typename Spec, typename Handler>
+FMT_CONSTEXPR void handle_int_type_spec(const Spec& specs, Handler&& handler) {
+  if (specs.thousands != '\0') {
+    handler.on_num();
+    return;
+  }
+  switch (specs.type) {
   case 0:
   case 'd':
     handler.on_dec();
@@ -1143,17 +1191,21 @@ FMT_CONSTEXPR void handle_int_type_spec(char spec, Handler&& handler) {
     handler.on_oct();
     break;
   case 'n':
+  case 'l':
+  case 'L':
     handler.on_num();
     break;
   default:
-    handler.on_error();
+    handler.on_error("Invalid type specifier \"" + std::string(1, specs.type) + "\" for formatting a value of type int");
   }
 }
 
 template <typename ErrorHandler = error_handler, typename Char>
 FMT_CONSTEXPR float_specs parse_float_type_spec(
     const basic_format_specs<Char>& specs, ErrorHandler&& eh = {}) {
+
   auto result = float_specs();
+  result.thousand_sep = specs.thousands;
   result.trailing_zeros = specs.alt;
   switch (specs.type) {
   case 0:
@@ -1193,10 +1245,12 @@ FMT_CONSTEXPR float_specs parse_float_type_spec(
     result.format = float_format::hex;
     break;
   case 'n':
+  case 'l':
+  case 'L':
     result.locale = true;
     break;
   default:
-    eh.on_error("invalid type specifier");
+    eh.on_error("Invalid type specifier \"" + std::string(1, specs.type) + "\" for formatting a value of type float");
     break;
   }
   return result;
@@ -1219,17 +1273,17 @@ FMT_CONSTEXPR void handle_cstring_type_spec(Char spec, Handler&& handler) {
   else if (spec == 'p')
     handler.on_pointer();
   else
-    handler.on_error("invalid type specifier");
+    handler.on_error("Invalid type specifier \"" + std::string(1, spec) + "\" for formatting a value of type string");
 }
 
 template <typename Char, typename ErrorHandler>
 FMT_CONSTEXPR void check_string_type_spec(Char spec, ErrorHandler&& eh) {
-  if (spec != 0 && spec != 's') eh.on_error("invalid type specifier");
+  if (spec != 0 && spec != 's') eh.on_error("Invalid type specifier \"" + std::string(1, spec) + "\" for formatting a value of type string");
 }
 
 template <typename Char, typename ErrorHandler>
 FMT_CONSTEXPR void check_pointer_type_spec(Char spec, ErrorHandler&& eh) {
-  if (spec != 0 && spec != 'p') eh.on_error("invalid type specifier");
+  if (spec != 0 && spec != 'p') eh.on_error("Invalid type specifier \"" + std::string(1, spec) + "\" for formatting a value of type pointer");
 }
 
 template <typename ErrorHandler> class int_type_checker : private ErrorHandler {
@@ -1242,8 +1296,8 @@ template <typename ErrorHandler> class int_type_checker : private ErrorHandler {
   FMT_CONSTEXPR void on_oct() {}
   FMT_CONSTEXPR void on_num() {}
 
-  FMT_CONSTEXPR void on_error() {
-    ErrorHandler::on_error("invalid type specifier");
+  FMT_CONSTEXPR void on_error(std::string error) {
+    ErrorHandler::on_error(error);
   }
 };
 
@@ -1500,7 +1554,7 @@ template <typename Range> class basic_writer {
     void on_num() {
       std::string groups = grouping<char_type>(writer.locale_);
       if (groups.empty()) return on_dec();
-      auto sep = thousands_sep<char_type>(writer.locale_);
+      auto sep = specs.thousands;
       if (!sep) return on_dec();
       int num_digits = count_digits(abs_value);
       int size = num_digits;
@@ -1514,11 +1568,11 @@ template <typename Range> class basic_writer {
       if (group == groups.cend())
         size += sep_size * ((num_digits - 1) / groups.back());
       writer.write_int(size, get_prefix(), specs,
-                       num_writer{abs_value, size, groups, sep});
+                       num_writer{abs_value, size, groups, static_cast<char_type>(sep)});
     }
 
-    FMT_NORETURN void on_error() {
-      FMT_THROW(duckdb::Exception("invalid type specifier"));
+    FMT_NORETURN void on_error(std::string error) {
+      FMT_THROW(duckdb::InvalidInputException(error));
     }
   };
 
@@ -1597,7 +1651,7 @@ template <typename Range> class basic_writer {
 
   template <typename T, typename Spec>
   void write_int(T value, const Spec& spec) {
-    handle_int_type_spec(spec.type, int_writer<T, Spec>(*this, value, spec));
+    handle_int_type_spec(spec, int_writer<T, Spec>(*this, value, spec));
   }
 
   template <typename T, FMT_ENABLE_IF(std::is_floating_point<T>::value)>
@@ -1647,8 +1701,15 @@ template <typename Range> class basic_writer {
       --exp;  // Adjust decimal place position.
     }
     fspecs.precision = precision;
-    char_type point = fspecs.locale ? decimal_point<char_type>(locale_)
-                                    : static_cast<char_type>('.');
+    char_type point;
+    if (fspecs.locale) {
+      point = decimal_point<char_type>(locale_);
+    } else if (fspecs.thousand_sep == '.') {
+      // if the thousand separator is a point, we automatically switch the decimal separator to comma
+      point =static_cast<char_type>(',');
+    } else {
+      point = static_cast<char_type>('.');
+    }
     write_padded(specs, float_writer<char_type>(buffer.data(),
                                                 static_cast<int>(buffer.size()),
                                                 exp, fspecs, point));
@@ -1751,7 +1812,7 @@ class arg_formatter_base {
 
   void write(const char_type* value) {
     if (!value) {
-      FMT_THROW(duckdb::Exception("string pointer is null"));
+      FMT_THROW(duckdb::InternalException("string pointer is null"));
     } else {
       auto length = std::char_traits<char_type>::length(value);
       basic_string_view<char_type> sv(value, length);
@@ -1958,6 +2019,10 @@ template <typename Char> class specs_setter {
   FMT_CONSTEXPR void on_plus() { specs_.sign = sign::plus; }
   FMT_CONSTEXPR void on_minus() { specs_.sign = sign::minus; }
   FMT_CONSTEXPR void on_space() { specs_.sign = sign::space; }
+  FMT_CONSTEXPR void on_comma() { specs_.thousands = ','; }
+  FMT_CONSTEXPR void on_underscore() { specs_.thousands = '_'; }
+  FMT_CONSTEXPR void on_single_quote() { specs_.thousands = '\''; }
+  FMT_CONSTEXPR void on_thousands(char sep) { specs_.thousands = sep; }
   FMT_CONSTEXPR void on_hash() { specs_.alt = true; }
 
   FMT_CONSTEXPR void on_zero() {
@@ -2066,7 +2131,7 @@ struct auto_id {};
 template <typename Context>
 FMT_CONSTEXPR typename Context::format_arg get_arg(Context& ctx, int id) {
   auto arg = ctx.arg(id);
-  if (!arg) ctx.on_error("argument index out of range");
+  if (!arg) ctx.on_error("Argument index \"" + std::to_string(id) + "\" out of range");
   return arg;
 }
 
@@ -2092,7 +2157,7 @@ class specs_handler : public specs_setter<typename Context::char_type> {
         get_arg(arg_id), context_.error_handler());
   }
 
-  void on_error(const char* message) { context_.on_error(message); }
+  void on_error(std::string message) { context_.on_error(message); }
 
  private:
   // This is only needed for compatibility with gcc 4.4.
@@ -2176,7 +2241,7 @@ class dynamic_specs_handler
     specs_.precision_ref = make_arg_ref(arg_id);
   }
 
-  FMT_CONSTEXPR void on_error(const char* message) {
+  FMT_CONSTEXPR void on_error(std::string message) {
     context_.on_error(message);
   }
 
@@ -2242,7 +2307,7 @@ template <typename SpecHandler, typename Char> struct width_adapter {
     handler.on_dynamic_width(id);
   }
 
-  FMT_CONSTEXPR void on_error(const char* message) {
+  FMT_CONSTEXPR void on_error(std::string message) {
     handler.on_error(message);
   }
 
@@ -2259,7 +2324,7 @@ template <typename SpecHandler, typename Char> struct precision_adapter {
     handler.on_dynamic_precision(id);
   }
 
-  FMT_CONSTEXPR void on_error(const char* message) {
+  FMT_CONSTEXPR void on_error(std::string message) {
     handler.on_error(message);
   }
 
@@ -2370,6 +2435,24 @@ FMT_CONSTEXPR const Char* parse_format_specs(const Char* begin, const Char* end,
     handler.on_space();
     ++begin;
     break;
+  case ',':
+    handler.on_comma();
+    ++begin;
+    break;
+  case '_':
+    handler.on_underscore();
+    ++begin;
+    break;
+  case '\'':
+    handler.on_single_quote();
+    ++begin;
+    break;
+  case 't':
+    ++begin;
+    if (begin == end) return begin;
+    handler.on_thousands(*begin);
+    ++begin;
+    break;
   }
   if (begin == end) return begin;
 
@@ -2420,7 +2503,7 @@ template <typename Handler, typename Char> struct id_adapter {
   FMT_CONSTEXPR void operator()(basic_string_view<Char> id) {
     handler.on_arg_id(id);
   }
-  FMT_CONSTEXPR void on_error(const char* message) {
+  FMT_CONSTEXPR void on_error(std::string message) {
     handler.on_error(message);
   }
   Handler& handler;
@@ -2524,7 +2607,7 @@ class format_string_checker {
     return arg_id_ < num_args ? parse_funcs_[arg_id_](context_) : begin;
   }
 
-  FMT_CONSTEXPR void on_error(const char* message) {
+  FMT_CONSTEXPR void on_error(std::string message) {
     context_.on_error(message);
   }
 
@@ -2889,7 +2972,7 @@ typename basic_format_context<Range, Char>::format_arg
 basic_format_context<Range, Char>::arg(basic_string_view<char_type> name) {
   map_.init(args_);
   format_arg arg = map_.find(name);
-  if (arg.type() == internal::none_type) this->on_error("argument not found");
+  if (arg.type() == internal::none_type) this->on_error("Argument with name \"" + name.to_string() + "\" not found, did you mean to use it as a format specifier (e.g. {:" + name.to_string() + "}");
   return arg;
 }
 

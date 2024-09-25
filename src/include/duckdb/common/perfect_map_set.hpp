@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //                         DuckDB
 //
-// duckdb/common/string_map_set.hpp
+// duckdb/common/perfect_map_set.hpp
 //
 //
 //===----------------------------------------------------------------------===//
@@ -15,13 +15,13 @@
 namespace duckdb {
 
 struct PerfectHash {
-	inline std::size_t operator()(const idx_t &h) const {
+	std::size_t operator()(const idx_t &h) const {
 		return h;
 	}
 };
 
 struct PerfectEquality {
-	inline bool operator()(const idx_t &a, const idx_t &b) const {
+	bool operator()(const idx_t &a, const idx_t &b) const {
 		return a == b;
 	}
 };

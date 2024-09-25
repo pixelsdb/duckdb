@@ -1,7 +1,6 @@
 #include "duckdb/common/types/vector_buffer.hpp"
 
 #include "duckdb/common/assert.hpp"
-#include "duckdb/common/types/chunk_collection.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
@@ -58,16 +57,21 @@ VectorStructBuffer::~VectorStructBuffer() {
 }
 
 VectorListBuffer::VectorListBuffer(unique_ptr<Vector> vector, idx_t initial_capacity)
-    : VectorBuffer(VectorBufferType::LIST_BUFFER), capacity(initial_capacity), child(std::move(vector)) {
+    : VectorBuffer(VectorBufferType::LIST_BUFFER), child(std::move(vector)), capacity(initial_capacity) {
 }
 
 VectorListBuffer::VectorListBuffer(const LogicalType &list_type, idx_t initial_capacity)
-    : VectorBuffer(VectorBufferType::LIST_BUFFER), capacity(initial_capacity),
-      child(make_uniq<Vector>(ListType::GetChildType(list_type), initial_capacity)) {
+    : VectorBuffer(VectorBufferType::LIST_BUFFER),
+      child(make_uniq<Vector>(ListType::GetChildType(list_type), initial_capacity)), capacity(initial_capacity) {
 }
 
 void VectorListBuffer::Reserve(idx_t to_reserve) {
 	if (to_reserve > capacity) {
+		if (to_reserve > DConstants::MAX_VECTOR_SIZE) {
+			// overflow: throw an exception
+			throw OutOfRangeException("Cannot resize vector to %d rows: maximum allowed vector size is %s", to_reserve,
+			                          StringUtil::BytesToHumanReadableString(DConstants::MAX_VECTOR_SIZE));
+		}
 		idx_t new_capacity = NextPowerOfTwo(to_reserve);
 		D_ASSERT(new_capacity >= to_reserve);
 		child->Resize(capacity, new_capacity);
@@ -89,14 +93,51 @@ void VectorListBuffer::Append(const Vector &to_append, const SelectionVector &se
 }
 
 void VectorListBuffer::PushBack(const Value &insert) {
-	if (size + 1 > capacity) {
+	while (size + 1 > capacity) {
 		child->Resize(capacity, capacity * 2);
 		capacity *= 2;
 	}
 	child->SetValue(size++, insert);
 }
 
+void VectorListBuffer::SetCapacity(idx_t new_capacity) {
+	this->capacity = new_capacity;
+}
+
+void VectorListBuffer::SetSize(idx_t new_size) {
+	this->size = new_size;
+}
+
 VectorListBuffer::~VectorListBuffer() {
+}
+
+VectorArrayBuffer::VectorArrayBuffer(unique_ptr<Vector> child_vector, idx_t array_size, idx_t initial_capacity)
+    : VectorBuffer(VectorBufferType::ARRAY_BUFFER), child(std::move(child_vector)), array_size(array_size),
+      size(initial_capacity) {
+	D_ASSERT(array_size != 0);
+}
+
+VectorArrayBuffer::VectorArrayBuffer(const LogicalType &array, idx_t initial)
+    : VectorBuffer(VectorBufferType::ARRAY_BUFFER),
+      child(make_uniq<Vector>(ArrayType::GetChildType(array), initial * ArrayType::GetSize(array))),
+      array_size(ArrayType::GetSize(array)), size(initial) {
+	// initialize the child array with (array_size * size) ^
+	D_ASSERT(!ArrayType::IsAnySize(array));
+}
+
+VectorArrayBuffer::~VectorArrayBuffer() {
+}
+
+Vector &VectorArrayBuffer::GetChild() {
+	return *child;
+}
+
+idx_t VectorArrayBuffer::GetArraySize() {
+	return array_size;
+}
+
+idx_t VectorArrayBuffer::GetChildSize() {
+	return size * array_size;
 }
 
 ManagedVectorBuffer::ManagedVectorBuffer(BufferHandle handle)

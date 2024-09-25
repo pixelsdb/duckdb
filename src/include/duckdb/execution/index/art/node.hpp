@@ -8,131 +8,185 @@
 
 #pragma once
 
-#include "duckdb/common/common.hpp"
-#include "duckdb/execution/index/art/art_key.hpp"
-#include "duckdb/execution/index/art/prefix.hpp"
-#include "duckdb/storage/index.hpp"
-#include "duckdb/storage/meta_block_reader.hpp"
-#include "duckdb/storage/meta_block_writer.hpp"
-#include "duckdb/common/allocator.hpp"
+#include "duckdb/common/assert.hpp"
+#include "duckdb/common/limits.hpp"
+#include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/typedefs.hpp"
+#include "duckdb/execution/index/fixed_size_allocator.hpp"
+#include "duckdb/execution/index/index_pointer.hpp"
 
 namespace duckdb {
-enum class NodeType : uint8_t { NLeaf = 0, N4 = 1, N16 = 2, N48 = 3, N256 = 4 };
+
+enum class NType : uint8_t {
+	PREFIX = 1,
+	LEAF = 2,
+	NODE_4 = 3,
+	NODE_16 = 4,
+	NODE_48 = 5,
+	NODE_256 = 6,
+	LEAF_INLINED = 7,
+	NODE_7_LEAF = 8,
+	NODE_15_LEAF = 9,
+	NODE_256_LEAF = 10,
+};
+
+enum class GateStatus : uint8_t {
+	GATE_NOT_SET = 0,
+	GATE_SET = 1,
+};
+
 class ART;
-class Node;
+class Prefix;
+class ARTKey;
 
-// Note: SwizzleablePointer assumes top 33 bits of the block_id are 0. Use a different
-// pointer implementation if that does not hold.
-class SwizzleablePointer;
-using ARTPointer = SwizzleablePointer;
-
-struct InternalType {
-	explicit InternalType(Node *n);
-
-	void Set(uint8_t *key_p, uint16_t key_size_p, ARTPointer *children_p, uint16_t children_size_p);
-	uint8_t *key;
-	uint16_t key_size;
-	ARTPointer *children;
-	uint16_t children_size;
-};
-
-struct MergeInfo {
-	MergeInfo(ART *l_art, ART *r_art, ART *root_l_art, ART *root_r_art, Node *&l_node, Node *&r_node)
-	    : l_art(l_art), r_art(r_art), root_l_art(root_l_art), root_r_art(root_r_art), l_node(l_node), r_node(r_node) {};
-	ART *l_art;
-	ART *r_art;
-	ART *root_l_art;
-	ART *root_r_art;
-	Node *&l_node;
-	Node *&r_node;
-};
-
-struct ParentsOfNodes {
-	ParentsOfNodes(Node *&l_parent, idx_t l_pos, Node *&r_parent, idx_t r_pos)
-	    : l_parent(l_parent), l_pos(l_pos), r_parent(r_parent), r_pos(r_pos) {};
-	Node *&l_parent;
-	idx_t l_pos;
-	Node *&r_parent;
-	idx_t r_pos;
-};
-
-class Node {
-public:
-	static const uint8_t EMPTY_MARKER = 48;
-	static const uint8_t NODE_48_SHRINK_THRESHOLD = 12;
-	static const uint8_t NODE_256_SHRINK_THRESHOLD = 36;
+//! The Node is the pointer class of the ART index.
+//! It inherits from the IndexPointer, and adds ART-specific functionality.
+class Node : public IndexPointer {
+	friend class Prefix;
 
 public:
-	explicit Node(NodeType type);
-	virtual ~Node() {
+	//! A gate sets the leftmost bit of the metadata, binary: 1000-0000.
+	static constexpr uint8_t AND_GATE = 0x80;
+	static constexpr idx_t AND_ROW_ID = 0x00FFFFFFFFFFFFFF;
+
+public:
+	//! Get a new pointer to a node and initialize it.
+	static void New(ART &art, Node &node, const NType type);
+	//! Free the node and its children.
+	static void Free(ART &art, Node &node);
+
+	//! Get a reference to the allocator.
+	static FixedSizeAllocator &GetAllocator(const ART &art, const NType type);
+	//! Get the index of a node type's allocator.
+	static uint8_t GetAllocatorIdx(const NType type);
+
+	//! Get a reference to a node.
+	template <class NODE>
+	static inline NODE &Ref(const ART &art, const Node ptr, const NType type) {
+		D_ASSERT(ptr.GetType() != NType::PREFIX);
+		return *(GetAllocator(art, type).Get<NODE>(ptr, !std::is_const<NODE>::value));
+	}
+	//! Get a node pointer, if the node is in memory, else nullptr.
+	template <class NODE>
+	static inline unsafe_optional_ptr<NODE> InMemoryRef(const ART &art, const Node ptr, const NType type) {
+		D_ASSERT(ptr.GetType() != NType::PREFIX);
+		return GetAllocator(art, type).GetIfLoaded<NODE>(ptr);
 	}
 
-	//! Number of non-null children
-	uint16_t count;
-	//! Node type
-	NodeType type;
-	//! Compressed path (prefix)
-	Prefix prefix;
+	//! Replace the child at byte.
+	void ReplaceChild(const ART &art, const uint8_t byte, const Node child = Node()) const;
+	//! Insert the child at byte.
+	static void InsertChild(ART &art, Node &node, const uint8_t byte, const Node child = Node());
+	//! Delete the child at byte.
+	static void DeleteChild(ART &art, Node &node, Node &prefix, const uint8_t byte, const GateStatus status,
+	                        const ARTKey &row_id);
 
-	static void Delete(Node *node);
-	//! Returns the memory size of the node
-	virtual idx_t MemorySize(ART &art, const bool &recurse);
-	//! Get the position of a child corresponding exactly to the specific byte, returns DConstants::INVALID_INDEX if not
-	//! exists
-	virtual idx_t GetChildPos(uint8_t k) {
-		return DConstants::INVALID_INDEX;
-	}
-	//! Get the position of the first child that is greater or equal to the specific byte, or DConstants::INVALID_INDEX
-	//! if there are no children matching the criteria
-	virtual idx_t GetChildGreaterEqual(uint8_t k, bool &equal) {
-		throw InternalException("Unimplemented GetChildGreaterEqual for ART node");
-	}
-	//! Get the position of the minimum element in the node
-	virtual idx_t GetMin();
-	//! Get the next position in the node, or DConstants::INVALID_INDEX if there is no next position. if pos ==
-	//! DConstants::INVALID_INDEX, then the first valid position in the node is returned
-	virtual idx_t GetNextPos(idx_t pos) {
-		return DConstants::INVALID_INDEX;
-	}
-	//! Get the next position and byte in the node, or DConstants::INVALID_INDEX if there is no next position. if pos ==
-	//! DConstants::INVALID_INDEX, then the first valid position in the node is returned
-	virtual idx_t GetNextPosAndByte(idx_t pos, uint8_t &byte) {
-		return DConstants::INVALID_INDEX;
-	}
-	//! Get the child at the specified position in the node. pos should be between [0, count). Throws an assertion if
-	//! the element is not found
-	virtual Node *GetChild(ART &art, idx_t pos);
-	//! Replaces the pointer to a child node
-	virtual void ReplaceChildPointer(idx_t pos, Node *node);
-	//! Returns whether the child at pos is in memory
-	virtual bool ChildIsInMemory(idx_t pos);
+	//! Get the immutable child at byte.
+	const unsafe_optional_ptr<Node> GetChild(ART &art, const uint8_t byte) const;
+	//! Get the child at byte.
+	unsafe_optional_ptr<Node> GetChildMutable(ART &art, const uint8_t byte) const;
+	//! Get the first immutable child greater than or equal to the byte.
+	const unsafe_optional_ptr<Node> GetNextChild(ART &art, uint8_t &byte) const;
+	//! Get the first child greater than or equal to the byte.
+	unsafe_optional_ptr<Node> GetNextChildMutable(ART &art, uint8_t &byte) const;
+	//! Returns true, if the byte exists, else false.
+	bool HasByte(ART &art, uint8_t &byte) const;
+	//! Get the first byte greater than or equal to the byte.
+	bool GetNextByte(ART &art, uint8_t &byte) const;
 
-	//! Insert a new child node at key_byte into the node
-	static void InsertChild(ART &art, Node *&node, uint8_t key_byte, Node *new_child);
-	//! Erase child node entry from node
-	static void EraseChild(ART &art, Node *&node, idx_t pos);
-	//! Get the corresponding node type for the provided size
-	static NodeType GetTypeBySize(idx_t size);
-	//! Create a new node of the specified type
-	static void New(const NodeType &type, Node *&node);
+	//! Returns the string representation of the node, if only_verify is false.
+	//! Else, it traverses and verifies the node.
+	string VerifyAndToString(ART &art, const bool only_verify) const;
+	//! Counts each node type.
+	void VerifyAllocations(ART &art, unordered_map<uint8_t, idx_t> &node_counts) const;
 
-	//! Returns the string representation of a node
-	string ToString(ART &art);
-	//! Serialize this node
-	BlockPointer Serialize(ART &art, duckdb::MetaBlockWriter &writer);
-	//! Returns the memory size of the node
-	idx_t RecursiveMemorySize(ART &art);
+	//! Returns the node type for a count.
+	static NType GetNodeType(const idx_t count);
 
-	//! Deserialize this node
-	static Node *Deserialize(ART &art, idx_t block_id, idx_t offset);
-	//! Merge two ART
-	static bool MergeARTs(ART *l_art, ART *r_art);
+	//! Initialize a merge by incrementing the buffer IDs of a node and its children.
+	void InitMerge(ART &art, const unsafe_vector<idx_t> &upper_bounds);
+	//! Merge a node into this node.
+	bool Merge(ART &art, Node &other, const GateStatus status);
+
+	//! Vacuum all nodes exceeding their vacuum threshold.
+	void Vacuum(ART &art, const unordered_set<uint8_t> &indexes);
+
+	//! Transform the node storage to deprecated storage.
+	static void TransformToDeprecated(ART &art, Node &node, unsafe_unique_ptr<FixedSizeAllocator> &allocator);
+
+	//! Returns the node type.
+	inline NType GetType() const {
+		return NType(GetMetadata() & ~AND_GATE);
+	}
+
+	//! True, if the node is a Node4, Node16, Node48, or Node256.
+	bool IsNode() const;
+	//! True, if the node is a Node7Leaf, Node15Leaf, or Node256Leaf.
+	bool IsLeafNode() const;
+	//! True, if the node is any leaf.
+	bool IsAnyLeaf() const;
+
+	//! Get the row ID (8th to 63rd bit).
+	inline row_t GetRowId() const {
+		return UnsafeNumericCast<row_t>(Get() & AND_ROW_ID);
+	}
+	//! Set the row ID (8th to 63rd bit).
+	inline void SetRowId(const row_t row_id) {
+		Set((Get() & AND_METADATA) | UnsafeNumericCast<idx_t>(row_id));
+	}
+
+	//! Returns the gate status of a node.
+	inline GateStatus GetGateStatus() const {
+		return (GetMetadata() & AND_GATE) == 0 ? GateStatus::GATE_NOT_SET : GateStatus::GATE_SET;
+	}
+	//! Sets the gate status of a node.
+	inline void SetGateStatus(const GateStatus status) {
+		switch (status) {
+		case GateStatus::GATE_SET:
+			SetMetadata(GetMetadata() | AND_GATE);
+			break;
+		case GateStatus::GATE_NOT_SET:
+			SetMetadata(GetMetadata() & ~AND_GATE);
+			break;
+		}
+	}
+
+	//! Assign operator.
+	inline void operator=(const IndexPointer &ptr) {
+		Set(ptr.Get());
+	}
 
 private:
-	//! Serialize internal nodes
-	BlockPointer SerializeInternal(ART &art, duckdb::MetaBlockWriter &writer, InternalType &internal_type);
-	//! Deserialize internal nodes
-	void DeserializeInternal(ART &art, duckdb::MetaBlockReader &reader);
-};
+	bool MergeNormalNodes(ART &art, Node &l_node, Node &r_node, uint8_t &byte, const GateStatus status);
+	void MergeLeafNodes(ART &art, Node &l_node, Node &r_node, uint8_t &byte);
+	bool MergeNodes(ART &art, Node &other, const GateStatus status);
+	bool PrefixContainsOther(ART &art, Node &l_node, Node &r_node, const uint8_t pos, const GateStatus status);
+	void MergeIntoNode4(ART &art, Node &l_node, Node &r_node, const uint8_t pos);
+	bool MergePrefixes(ART &art, Node &other, const GateStatus status);
+	bool MergeInternal(ART &art, Node &other, const GateStatus status);
 
+private:
+	template <class NODE>
+	static void InitMergeInternal(ART &art, NODE &n, const unsafe_vector<idx_t> &upper_bounds) {
+		NODE::Iterator(n, [&](Node &child) { child.InitMerge(art, upper_bounds); });
+	}
+
+	template <class NODE>
+	static void VacuumInternal(ART &art, NODE &n, const unordered_set<uint8_t> &indexes) {
+		NODE::Iterator(n, [&](Node &child) { child.Vacuum(art, indexes); });
+	}
+
+	template <class NODE>
+	static void TransformToDeprecatedInternal(ART &art, unsafe_optional_ptr<NODE> ptr,
+	                                          unsafe_unique_ptr<FixedSizeAllocator> &allocator) {
+		if (ptr) {
+			NODE::Iterator(*ptr, [&](Node &child) { Node::TransformToDeprecated(art, child, allocator); });
+		}
+	}
+
+	template <class NODE>
+	static void VerifyAllocationsInternal(ART &art, NODE &n, unordered_map<uint8_t, idx_t> &node_counts) {
+		NODE::Iterator(n, [&](const Node &child) { child.VerifyAllocations(art, node_counts); });
+	}
+};
 } // namespace duckdb

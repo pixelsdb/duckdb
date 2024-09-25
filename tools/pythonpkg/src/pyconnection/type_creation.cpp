@@ -5,12 +5,17 @@ namespace duckdb {
 shared_ptr<DuckDBPyType> DuckDBPyConnection::MapType(const shared_ptr<DuckDBPyType> &key_type,
                                                      const shared_ptr<DuckDBPyType> &value_type) {
 	auto map_type = LogicalType::MAP(key_type->Type(), value_type->Type());
-	return make_shared<DuckDBPyType>(map_type);
+	return make_shared_ptr<DuckDBPyType>(map_type);
 }
 
-shared_ptr<DuckDBPyType> DuckDBPyConnection::ArrayType(const shared_ptr<DuckDBPyType> &type) {
+shared_ptr<DuckDBPyType> DuckDBPyConnection::ListType(const shared_ptr<DuckDBPyType> &type) {
 	auto array_type = LogicalType::LIST(type->Type());
-	return make_shared<DuckDBPyType>(array_type);
+	return make_shared_ptr<DuckDBPyType>(array_type);
+}
+
+shared_ptr<DuckDBPyType> DuckDBPyConnection::ArrayType(const shared_ptr<DuckDBPyType> &type, idx_t size) {
+	auto array_type = LogicalType::ARRAY(type->Type(), size);
+	return make_shared_ptr<DuckDBPyType>(array_type);
 }
 
 static child_list_t<LogicalType> GetChildList(const py::object &container) {
@@ -19,11 +24,11 @@ static child_list_t<LogicalType> GetChildList(const py::object &container) {
 		const py::list &fields = container;
 		idx_t i = 1;
 		for (auto &item : fields) {
-			if (!py::isinstance<DuckDBPyType>(item)) {
+			shared_ptr<DuckDBPyType> pytype;
+			if (!py::try_cast<shared_ptr<DuckDBPyType>>(item, pytype)) {
 				string actual_type = py::str(item.get_type());
 				throw InvalidInputException("object has to be a list of DuckDBPyType's, not '%s'", actual_type);
 			}
-			auto *pytype = item.cast<DuckDBPyType *>();
 			types.push_back(std::make_pair(StringUtil::Format("v%d", i++), pytype->Type()));
 		}
 		return types;
@@ -33,12 +38,12 @@ static child_list_t<LogicalType> GetChildList(const py::object &container) {
 			auto &name_p = item.first;
 			auto &type_p = item.second;
 			string name = py::str(name_p);
-			if (!py::isinstance<DuckDBPyType>(type_p)) {
+			shared_ptr<DuckDBPyType> pytype;
+			if (!py::try_cast<shared_ptr<DuckDBPyType>>(type_p, pytype)) {
 				string actual_type = py::str(type_p.get_type());
 				throw InvalidInputException("object has to be a list of DuckDBPyType's, not '%s'", actual_type);
 			}
-			auto *type = type_p.cast<DuckDBPyType *>();
-			types.push_back(std::make_pair(name, type->Type()));
+			types.push_back(std::make_pair(name, pytype->Type()));
 		}
 		return types;
 	} else {
@@ -49,13 +54,12 @@ static child_list_t<LogicalType> GetChildList(const py::object &container) {
 }
 
 shared_ptr<DuckDBPyType> DuckDBPyConnection::StructType(const py::object &fields) {
-	bool is_list = py::isinstance<py::list>(fields);
 	child_list_t<LogicalType> types = GetChildList(fields);
 	if (types.empty()) {
 		throw InvalidInputException("Can not create an empty struct type!");
 	}
 	auto struct_type = LogicalType::STRUCT(std::move(types));
-	return make_shared<DuckDBPyType>(struct_type);
+	return make_shared_ptr<DuckDBPyType>(struct_type);
 }
 
 shared_ptr<DuckDBPyType> DuckDBPyConnection::UnionType(const py::object &members) {
@@ -65,7 +69,7 @@ shared_ptr<DuckDBPyType> DuckDBPyConnection::UnionType(const py::object &members
 		throw InvalidInputException("Can not create an empty union type!");
 	}
 	auto union_type = LogicalType::UNION(std::move(types));
-	return make_shared<DuckDBPyType>(union_type);
+	return make_shared_ptr<DuckDBPyType>(union_type);
 }
 
 shared_ptr<DuckDBPyType> DuckDBPyConnection::EnumType(const string &name, const shared_ptr<DuckDBPyType> &type,
@@ -75,7 +79,7 @@ shared_ptr<DuckDBPyType> DuckDBPyConnection::EnumType(const string &name, const 
 
 shared_ptr<DuckDBPyType> DuckDBPyConnection::DecimalType(int width, int scale) {
 	auto decimal_type = LogicalType::DECIMAL(width, scale);
-	return make_shared<DuckDBPyType>(decimal_type);
+	return make_shared_ptr<DuckDBPyType>(decimal_type);
 }
 
 shared_ptr<DuckDBPyType> DuckDBPyConnection::StringType(const string &collation) {
@@ -85,14 +89,17 @@ shared_ptr<DuckDBPyType> DuckDBPyConnection::StringType(const string &collation)
 	} else {
 		type = LogicalType::VARCHAR_COLLATION(collation);
 	}
-	return make_shared<DuckDBPyType>(type);
+	return make_shared_ptr<DuckDBPyType>(type);
 }
 
 shared_ptr<DuckDBPyType> DuckDBPyConnection::Type(const string &type_str) {
-	if (!connection) {
-		throw ConnectionException("Connection already closed!");
-	}
-	return make_shared<DuckDBPyType>(TransformStringToLogicalType(type_str, *connection->context));
+	auto &connection = con.GetConnection();
+	auto &context = *connection.context;
+	shared_ptr<DuckDBPyType> result;
+	context.RunFunctionInTransaction([&result, &type_str, &context]() {
+		result = make_shared_ptr<DuckDBPyType>(TransformStringToLogicalType(type_str, context));
+	});
+	return result;
 }
 
 } // namespace duckdb

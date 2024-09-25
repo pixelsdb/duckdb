@@ -25,15 +25,15 @@ struct PragmaStorageInfo {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
-struct PragmaLastProfilingOutput {
-	static void RegisterFunction(BuiltinFunctions &set);
-};
-
-struct PragmaDetailedProfilingOutput {
+struct PragmaMetadataInfo {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
 struct PragmaVersion {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct PragmaPlatform {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -50,6 +50,14 @@ struct DuckDBColumnsFun {
 };
 
 struct DuckDBConstraintsFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBSecretsFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBWhichSecretFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -77,6 +85,14 @@ struct DuckDBIndexesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
+struct DuckDBMemoryFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBOptimizersFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
 struct DuckDBSequencesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
@@ -94,6 +110,10 @@ struct DuckDBTemporaryFilesFun {
 };
 
 struct DuckDBTypesFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct DuckDBVariablesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 
@@ -118,10 +138,14 @@ struct TestType {
 
 struct TestAllTypesFun {
 	static void RegisterFunction(BuiltinFunctions &set);
-	static vector<TestType> GetTestTypes();
+	static vector<TestType> GetTestTypes(bool large_enum = false);
 };
 
 struct TestVectorTypesFun {
+	static void RegisterFunction(BuiltinFunctions &set);
+};
+
+struct PragmaUserAgent {
 	static void RegisterFunction(BuiltinFunctions &set);
 };
 

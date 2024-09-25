@@ -2,7 +2,7 @@
 //  DuckDB
 //  https://github.com/duckdb/duckdb-swift
 //
-//  Copyright © 2018-2023 Stichting DuckDB Foundation
+//  Copyright © 2018-2024 Stichting DuckDB Foundation
 //
 //  Permission is hereby granted, free of charge, to any person obtaining a copy
 //  of this software and associated documentation files (the "Software"), to
@@ -24,7 +24,7 @@
 
 import Foundation
 
-extension Foundation.Date {
+public extension Foundation.Date {
   
   /// Creates a date value initialized from a DuckDB Date value
   init(_ date: Date) {

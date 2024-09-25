@@ -13,7 +13,11 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/reference_map.hpp"
+#include "duckdb/main/query_result.hpp"
+#include "duckdb/execution/task_error_manager.hpp"
 #include "duckdb/parallel/pipeline.hpp"
+
+#include <condition_variable>
 
 namespace duckdb {
 class ClientContext;
@@ -35,6 +39,9 @@ class Executor {
 	friend class PipelineBuildState;
 
 public:
+	static constexpr idx_t WAIT_TIME = 20;
+
+public:
 	explicit Executor(ClientContext &context);
 	~Executor();
 
@@ -47,16 +54,18 @@ public:
 	void Initialize(unique_ptr<PhysicalOperator> physical_plan);
 
 	void CancelTasks();
-	PendingExecutionResult ExecuteTask();
+	PendingExecutionResult ExecuteTask(bool dry_run = false);
+	void WaitForTask();
+	void SignalTaskRescheduled(lock_guard<mutex> &);
 
 	void Reset();
 
 	vector<LogicalType> GetTypes();
 
-	unique_ptr<DataChunk> FetchChunk();
-
 	//! Push a new error
-	void PushError(PreservedError exception);
+	void PushError(ErrorData exception);
+
+	ErrorData GetError();
 
 	//! True if an error has been thrown
 	bool HasError();
@@ -70,8 +79,14 @@ public:
 	//! Flush a thread context into the client context
 	void Flush(ThreadContext &context);
 
+	//! Reschedules a task that was blocked
+	void RescheduleTask(shared_ptr<Task> &task);
+
+	//! Add the task to be rescheduled
+	void AddToBeRescheduled(shared_ptr<Task> &task);
+
 	//! Returns the progress of the pipelines
-	bool GetPipelinesProgress(double &current_progress);
+	bool GetPipelinesProgress(double &current_progress, uint64_t &current_cardinality, uint64_t &total_cardinality);
 
 	void CompletePipeline() {
 		completed_pipelines++;
@@ -86,23 +101,42 @@ public:
 
 	//! Whether or not the root of the pipeline is a result collector object
 	bool HasResultCollector();
+	//! Whether or not the root of the pipeline is a streaming result collector object
+	bool HasStreamingResultCollector();
 	//! Returns the query result - can only be used if `HasResultCollector` returns true
 	unique_ptr<QueryResult> GetResult();
 
 	//! Returns true if all pipelines have been completed
 	bool ExecutionIsFinished();
 
+	void RegisterTask() {
+		executor_tasks++;
+	}
+	void UnregisterTask() {
+		executor_tasks--;
+	}
+
+	idx_t GetTotalPipelines() const {
+		return total_pipelines;
+	}
+
+	idx_t GetCompletedPipelines() const {
+		return completed_pipelines.load();
+	}
+
 private:
+	//! Check if the streaming query result is waiting to be fetched from, must hold the 'executor_lock'
+	bool ResultCollectorIsBlocked();
 	void InitializeInternal(PhysicalOperator &physical_plan);
 
 	void ScheduleEvents(const vector<shared_ptr<MetaPipeline>> &meta_pipelines);
-	static void ScheduleEventsInternal(ScheduleEventData &event_data);
+	void ScheduleEventsInternal(ScheduleEventData &event_data);
 
 	static void VerifyScheduledEvents(const ScheduleEventData &event_data);
-	static void VerifyScheduledEventsInternal(const idx_t i, const vector<Event *> &vertices, vector<bool> &visited,
-	                                          vector<bool> &recursion_stack);
+	static void VerifyScheduledEventsInternal(const idx_t i, const vector<reference<Event>> &vertices,
+	                                          vector<bool> &visited, vector<bool> &recursion_stack);
 
-	static void SchedulePipeline(const shared_ptr<MetaPipeline> &pipeline, ScheduleEventData &event_data);
+	void SchedulePipeline(const shared_ptr<MetaPipeline> &pipeline, ScheduleEventData &event_data);
 
 	bool NextExecutor();
 
@@ -116,7 +150,6 @@ private:
 	unique_ptr<PhysicalOperator> owned_plan;
 
 	mutex executor_lock;
-	mutex error_lock;
 	//! All pipelines of the query plan
 	vector<shared_ptr<Pipeline>> pipelines;
 	//! The root pipelines of the query
@@ -129,12 +162,12 @@ private:
 	idx_t root_pipeline_idx;
 	//! The producer of this query
 	unique_ptr<ProducerToken> producer;
-	//! Exceptions that occurred during the execution of the current query
-	vector<PreservedError> exceptions;
 	//! List of events
 	vector<shared_ptr<Event>> events;
 	//! The query profiler
 	shared_ptr<QueryProfiler> profiler;
+	//! Task error manager
+	TaskErrorManager error_manager;
 
 	//! The amount of completed pipelines of the query
 	atomic<idx_t> completed_pipelines;
@@ -146,6 +179,17 @@ private:
 	//! The last pending execution result (if any)
 	PendingExecutionResult execution_result;
 	//! The current task in process (if any)
-	unique_ptr<Task> task;
+	shared_ptr<Task> task;
+
+	//! Task that have been descheduled
+	unordered_map<Task *, shared_ptr<Task>> to_be_rescheduled_tasks;
+	//! The semaphore to signal task rescheduling
+	std::condition_variable task_reschedule;
+
+	//! Currently alive executor tasks
+	atomic<idx_t> executor_tasks;
+
+	//! Total time blocked while waiting on tasks. In ticks. One tick corresponds to WAIT_TIME.
+	atomic<idx_t> blocked_thread_time;
 };
 } // namespace duckdb

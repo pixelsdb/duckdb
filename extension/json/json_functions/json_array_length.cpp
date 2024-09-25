@@ -2,7 +2,7 @@
 
 namespace duckdb {
 
-static inline uint64_t GetArrayLength(yyjson_val *val, yyjson_alc *alc, Vector &result) {
+static inline uint64_t GetArrayLength(yyjson_val *val, yyjson_alc *, Vector &, ValidityMask &, idx_t) {
 	return yyjson_arr_size(val);
 }
 
@@ -28,12 +28,11 @@ static void GetArrayLengthFunctionsInternal(ScalarFunctionSet &set, const Logica
 	                               JSONReadManyFunctionData::Bind, nullptr, nullptr, JSONFunctionLocalState::Init));
 }
 
-CreateScalarFunctionInfo JSONFunctions::GetArrayLengthFunction() {
+ScalarFunctionSet JSONFunctions::GetArrayLengthFunction() {
 	ScalarFunctionSet set("json_array_length");
 	GetArrayLengthFunctionsInternal(set, LogicalType::VARCHAR);
-	GetArrayLengthFunctionsInternal(set, JSONCommon::JSONType());
-
-	return CreateScalarFunctionInfo(std::move(set));
+	GetArrayLengthFunctionsInternal(set, LogicalType::JSON());
+	return set;
 }
 
 } // namespace duckdb

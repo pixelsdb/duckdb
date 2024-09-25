@@ -2,7 +2,7 @@
 
 namespace duckdb {
 
-static inline list_entry_t GetJSONKeys(yyjson_val *val, yyjson_alc *alc, Vector &result) {
+static inline list_entry_t GetJSONKeys(yyjson_val *val, yyjson_alc *, Vector &result, ValidityMask &, idx_t) {
 	auto num_keys = yyjson_obj_size(val);
 	auto current_size = ListVector::GetListSize(result);
 	auto new_size = current_size + num_keys;
@@ -49,12 +49,11 @@ static void GetJSONKeysFunctionsInternal(ScalarFunctionSet &set, const LogicalTy
 	                               JSONReadManyFunctionData::Bind, nullptr, nullptr, JSONFunctionLocalState::Init));
 }
 
-CreateScalarFunctionInfo JSONFunctions::GetKeysFunction() {
+ScalarFunctionSet JSONFunctions::GetKeysFunction() {
 	ScalarFunctionSet set("json_keys");
 	GetJSONKeysFunctionsInternal(set, LogicalType::VARCHAR);
-	GetJSONKeysFunctionsInternal(set, JSONCommon::JSONType());
-
-	return CreateScalarFunctionInfo(std::move(set));
+	GetJSONKeysFunctionsInternal(set, LogicalType::JSON());
+	return set;
 }
 
 } // namespace duckdb

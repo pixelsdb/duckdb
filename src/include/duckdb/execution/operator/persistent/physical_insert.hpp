@@ -26,11 +26,12 @@ public:
 public:
 	//! INSERT INTO
 	PhysicalInsert(vector<LogicalType> types, TableCatalogEntry &table, physical_index_vector_t<idx_t> column_index_map,
-	               vector<unique_ptr<Expression>> bound_defaults, vector<unique_ptr<Expression>> set_expressions,
-	               vector<PhysicalIndex> set_columns, vector<LogicalType> set_types, idx_t estimated_cardinality,
-	               bool return_chunk, bool parallel, OnConflictAction action_type,
-	               unique_ptr<Expression> on_conflict_condition, unique_ptr<Expression> do_update_condition,
-	               unordered_set<column_t> on_conflict_filter, vector<column_t> columns_to_fetch);
+	               vector<unique_ptr<Expression>> bound_defaults, vector<unique_ptr<BoundConstraint>> bound_constraints,
+	               vector<unique_ptr<Expression>> set_expressions, vector<PhysicalIndex> set_columns,
+	               vector<LogicalType> set_types, idx_t estimated_cardinality, bool return_chunk, bool parallel,
+	               OnConflictAction action_type, unique_ptr<Expression> on_conflict_condition,
+	               unique_ptr<Expression> do_update_condition, unordered_set<column_t> on_conflict_filter,
+	               vector<column_t> columns_to_fetch);
 	//! CREATE TABLE AS
 	PhysicalInsert(LogicalOperator &op, SchemaCatalogEntry &schema, unique_ptr<BoundCreateTableInfo> info,
 	               idx_t estimated_cardinality, bool parallel);
@@ -43,6 +44,8 @@ public:
 	vector<LogicalType> insert_types;
 	//! The default expressions of the columns for which no value is provided
 	vector<unique_ptr<Expression>> bound_defaults;
+	//! The bound constraints for the table
+	vector<unique_ptr<BoundConstraint>> bound_constraints;
 	//! If the returning statement is present, return the whole chunk
 	bool return_chunk;
 	//! Table schema, in case of CREATE TABLE AS
@@ -77,8 +80,7 @@ public:
 public:
 	// Source interface
 	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
-	void GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate,
-	             LocalSourceState &lstate) const override;
+	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override;
 
 	bool IsSource() const override {
 		return true;
@@ -88,11 +90,10 @@ public:
 	// Sink interface
 	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;
 	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override;
-	SinkResultType Sink(ExecutionContext &context, GlobalSinkState &state, LocalSinkState &lstate,
-	                    DataChunk &input) const override;
-	void Combine(ExecutionContext &context, GlobalSinkState &gstate, LocalSinkState &lstate) const override;
+	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override;
+	SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override;
 	SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
-	                          GlobalSinkState &gstate) const override;
+	                          OperatorSinkFinalizeInput &input) const override;
 
 	bool IsSink() const override {
 		return true;
@@ -116,10 +117,10 @@ public:
 protected:
 	void CombineExistingAndInsertTuples(DataChunk &result, DataChunk &scan_chunk, DataChunk &input_chunk,
 	                                    ClientContext &client) const;
-	void OnConflictHandling(TableCatalogEntry &table, ExecutionContext &context, InsertLocalState &lstate) const;
-	void PerformOnConflictAction(ExecutionContext &context, DataChunk &chunk, TableCatalogEntry &table,
-	                             Vector &row_ids) const;
-	void RegisterUpdatedRows(InsertLocalState &lstate, const Vector &row_ids, idx_t count) const;
+	//! Returns the amount of updated tuples
+	void CreateUpdateChunk(ExecutionContext &context, DataChunk &chunk, TableCatalogEntry &table, Vector &row_ids,
+	                       DataChunk &result) const;
+	idx_t OnConflictHandling(TableCatalogEntry &table, ExecutionContext &context, InsertLocalState &lstate) const;
 };
 
 } // namespace duckdb

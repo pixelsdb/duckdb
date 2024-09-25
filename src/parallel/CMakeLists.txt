@@ -6,12 +6,15 @@ add_library_unity(
   executor_task.cpp
   executor.cpp
   event.cpp
+  interrupt.cpp
   pipeline.cpp
   pipeline_complete_event.cpp
   pipeline_event.cpp
   pipeline_executor.cpp
   pipeline_finish_event.cpp
   pipeline_initialize_event.cpp
+  pipeline_prepare_finish_event.cpp
+  task_executor.cpp
   task_scheduler.cpp
   thread_context.cpp)
 set(ALL_OBJECT_FILES

@@ -1,6 +1,7 @@
 #include "duckdb/execution/operator/helper/physical_streaming_sample.hpp"
 #include "duckdb/common/random_engine.hpp"
 #include "duckdb/common/to_string.hpp"
+#include "duckdb/common/enum_util.hpp"
 
 namespace duckdb {
 
@@ -67,8 +68,10 @@ OperatorResultType PhysicalStreamingSample::Execute(ExecutionContext &context, D
 	return OperatorResultType::NEED_MORE_INPUT;
 }
 
-string PhysicalStreamingSample::ParamsToString() const {
-	return SampleMethodToString(method) + ": " + to_string(100 * percentage) + "%";
+InsertionOrderPreservingMap<string> PhysicalStreamingSample::ParamsToString() const {
+	InsertionOrderPreservingMap<string> result;
+	result["Sample Method"] = EnumUtil::ToString(method) + ": " + to_string(100 * percentage) + "%";
+	return result;
 }
 
 } // namespace duckdb

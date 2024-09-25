@@ -1,5 +1,6 @@
 #include "duckdb/parser/expression/parameter_expression.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
@@ -7,35 +8,31 @@
 namespace duckdb {
 
 BindResult ExpressionBinder::BindExpression(ParameterExpression &expr, idx_t depth) {
-	D_ASSERT(expr.parameter_nr > 0);
-	auto bound_parameter = make_uniq<BoundParameterExpression>(expr.parameter_nr);
-	bound_parameter->alias = expr.alias;
 	if (!binder.parameters) {
 		throw BinderException("Unexpected prepared parameter. This type of statement can't be prepared!");
 	}
-	auto parameter_idx = expr.parameter_nr;
-	// check if a parameter value has already been supplied
-	if (parameter_idx <= binder.parameters->parameter_data.size()) {
+	auto parameter_id = expr.identifier;
+
+	D_ASSERT(binder.parameters);
+	// Check if a parameter value has already been supplied
+	auto &parameter_data = binder.parameters->GetParameterData();
+	auto param_data_it = parameter_data.find(parameter_id);
+	if (param_data_it != parameter_data.end()) {
 		// it has! emit a constant directly
-		auto &data = binder.parameters->parameter_data[parameter_idx - 1];
-		auto constant = make_uniq<BoundConstantExpression>(data.value);
+		auto &data = param_data_it->second;
+		auto return_type = binder.parameters->GetReturnType(parameter_id);
+		bool is_literal =
+		    return_type.id() == LogicalTypeId::INTEGER_LITERAL || return_type.id() == LogicalTypeId::STRING_LITERAL;
+		auto constant = make_uniq<BoundConstantExpression>(data.GetValue());
 		constant->alias = expr.alias;
-		return BindResult(std::move(constant));
+		if (is_literal) {
+			return BindResult(std::move(constant));
+		}
+		auto cast = BoundCastExpression::AddCastToType(context, std::move(constant), return_type);
+		return BindResult(std::move(cast));
 	}
-	auto entry = binder.parameters->parameters.find(parameter_idx);
-	if (entry == binder.parameters->parameters.end()) {
-		// no entry yet: create a new one
-		auto data = make_shared<BoundParameterData>();
-		data->return_type = binder.parameters->GetReturnType(parameter_idx - 1);
-		bound_parameter->return_type = data->return_type;
-		bound_parameter->parameter_data = data;
-		binder.parameters->parameters[parameter_idx] = std::move(data);
-	} else {
-		// a prepared statement with this parameter index was already there: use it
-		auto &data = entry->second;
-		bound_parameter->parameter_data = data;
-		bound_parameter->return_type = binder.parameters->GetReturnType(parameter_idx - 1);
-	}
+
+	auto bound_parameter = binder.parameters->BindParameterExpression(expr);
 	return BindResult(std::move(bound_parameter));
 }
 

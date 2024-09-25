@@ -17,6 +17,7 @@
 #include "duckdb/parser/column_list.hpp"
 #include "duckdb/storage/table/segment_base.hpp"
 #include "duckdb/storage/block.hpp"
+#include "duckdb/common/enums/checkpoint_type.hpp"
 
 namespace duckdb {
 class AttachedDatabase;
@@ -31,16 +32,32 @@ class RowGroupCollection;
 class RowGroupWriter;
 class UpdateSegment;
 class TableStatistics;
-class TableStorageInfo;
+struct ColumnSegmentInfo;
 class Vector;
 struct ColumnCheckpointState;
+struct PersistentColumnData;
+struct PersistentRowGroupData;
 struct RowGroupPointer;
 struct TransactionData;
-struct VersionNode;
 class CollectionScanState;
 class TableFilterSet;
 struct ColumnFetchState;
 struct RowGroupAppendState;
+class MetadataManager;
+class RowVersionManager;
+class ScanFilterInfo;
+class StorageCommitState;
+
+struct RowGroupWriteInfo {
+	RowGroupWriteInfo(PartialBlockManager &manager, const vector<CompressionType> &compression_types,
+	                  CheckpointType checkpoint_type = CheckpointType::FULL_CHECKPOINT)
+	    : manager(manager), compression_types(compression_types), checkpoint_type(checkpoint_type) {
+	}
+
+	PartialBlockManager &manager;
+	const vector<CompressionType> &compression_types;
+	CheckpointType checkpoint_type;
+};
 
 struct RowGroupWriteData {
 	vector<unique_ptr<ColumnCheckpointState>> states;
@@ -50,31 +67,28 @@ struct RowGroupWriteData {
 class RowGroup : public SegmentBase<RowGroup> {
 public:
 	friend class ColumnData;
-	friend class VersionDeleteState;
-
-public:
-	static constexpr const idx_t ROW_GROUP_SIZE = STANDARD_ROW_GROUPS_SIZE;
-	static constexpr const idx_t ROW_GROUP_VECTOR_COUNT = ROW_GROUP_SIZE / STANDARD_VECTOR_SIZE;
 
 public:
 	RowGroup(RowGroupCollection &collection, idx_t start, idx_t count);
-	RowGroup(RowGroupCollection &collection, RowGroupPointer &&pointer);
-	RowGroup(RowGroup &row_group, RowGroupCollection &collection, idx_t start);
+	RowGroup(RowGroupCollection &collection, RowGroupPointer pointer);
+	RowGroup(RowGroupCollection &collection, PersistentRowGroupData &data);
 	~RowGroup();
 
 private:
 	//! The RowGroupCollection this row-group is a part of
-	RowGroupCollection &collection;
+	reference<RowGroupCollection> collection;
 	//! The version info of the row_group (inserted and deleted tuple info)
-	shared_ptr<VersionNode> version_info;
+	atomic<optional_ptr<RowVersionManager>> version_info;
+	//! The owned version info of the row_group (inserted and deleted tuple info)
+	shared_ptr<RowVersionManager> owned_version_info;
 	//! The column data of the row_group
 	vector<shared_ptr<ColumnData>> columns;
 
 public:
+	void MoveToCollection(RowGroupCollection &collection, idx_t new_start);
 	RowGroupCollection &GetCollection() {
-		return collection;
+		return collection.get();
 	}
-	DatabaseInstance &GetDatabase();
 	BlockManager &GetBlockManager();
 	DataTableInfo &GetTableInfo();
 
@@ -82,7 +96,7 @@ public:
 	                               ExpressionExecutor &executor, CollectionScanState &scan_state,
 	                               DataChunk &scan_chunk);
 	unique_ptr<RowGroup> AddColumn(RowGroupCollection &collection, ColumnDefinition &new_column,
-	                               ExpressionExecutor &executor, Expression *default_value, Vector &intermediate);
+	                               ExpressionExecutor &executor, Vector &intermediate);
 	unique_ptr<RowGroup> RemoveColumn(RowGroupCollection &collection, idx_t removed_column);
 
 	void CommitDrop();
@@ -95,7 +109,7 @@ public:
 	bool InitializeScanWithOffset(CollectionScanState &state, idx_t vector_offset);
 	//! Checks the given set of table filters against the row-group statistics. Returns false if the entire row group
 	//! can be skipped.
-	bool CheckZonemap(TableFilterSet &filters, const vector<column_t> &column_ids);
+	bool CheckZonemap(ScanFilterInfo &filters);
 	//! Checks the given set of table filters against the per-segment statistics. Returns false if any segments were
 	//! skipped.
 	bool CheckZonemapSegments(CollectionScanState &state);
@@ -118,14 +132,19 @@ public:
 	void CommitAppend(transaction_t commit_id, idx_t start, idx_t count);
 	//! Revert a previous append made by RowGroup::AppendVersionInfo
 	void RevertAppend(idx_t start);
+	//! Clean up append states that can either be compressed or deleted
+	void CleanupAppend(transaction_t lowest_transaction, idx_t start, idx_t count);
 
 	//! Delete the given set of rows in the version manager
 	idx_t Delete(TransactionData transaction, DataTable &table, row_t *row_ids, idx_t count);
 
-	RowGroupWriteData WriteToDisk(PartialBlockManager &manager, const vector<CompressionType> &compression_types);
-	RowGroupPointer Checkpoint(RowGroupWriter &writer, TableStatistics &global_stats);
-	static void Serialize(RowGroupPointer &pointer, Serializer &serializer);
-	static RowGroupPointer Deserialize(Deserializer &source, const vector<LogicalType> &columns);
+	RowGroupWriteData WriteToDisk(RowGroupWriteInfo &info);
+	//! Returns the number of committed rows (count - committed deletes)
+	idx_t GetCommittedRowCount();
+	RowGroupWriteData WriteToDisk(RowGroupWriter &writer);
+	RowGroupPointer Checkpoint(RowGroupWriteData write_data, RowGroupWriter &writer, TableStatistics &global_stats);
+	bool IsPersistent() const;
+	PersistentRowGroupData SerializeRowGroupInfo() const;
 
 	void InitializeAppend(RowGroupAppendState &append_state);
 	void Append(RowGroupAppendState &append_state, DataChunk &chunk, idx_t append_count);
@@ -139,37 +158,50 @@ public:
 
 	void MergeStatistics(idx_t column_idx, const BaseStatistics &other);
 	void MergeIntoStatistics(idx_t column_idx, BaseStatistics &other);
+	void MergeIntoStatistics(TableStatistics &other);
 	unique_ptr<BaseStatistics> GetStatistics(idx_t column_idx);
 
-	void GetStorageInfo(idx_t row_group_index, TableStorageInfo &result);
+	void GetColumnSegmentInfo(idx_t row_group_index, vector<ColumnSegmentInfo> &result);
+
+	idx_t GetAllocationSize() const {
+		return allocation_size;
+	}
 
 	void Verify();
 
 	void NextVector(CollectionScanState &state);
 
+	idx_t DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count);
+	RowVersionManager &GetOrCreateVersionInfo();
+
+	// Serialization
+	static void Serialize(RowGroupPointer &pointer, Serializer &serializer);
+	static RowGroupPointer Deserialize(Deserializer &deserializer);
+
 private:
-	ChunkInfo *GetChunkInfo(idx_t vector_idx);
-	ColumnData &GetColumn(idx_t c);
+	optional_ptr<RowVersionManager> GetVersionInfo();
+	shared_ptr<RowVersionManager> GetOrCreateVersionInfoPtr();
+	shared_ptr<RowVersionManager> GetOrCreateVersionInfoInternal();
+	void SetVersionInfo(shared_ptr<RowVersionManager> version);
+
+	ColumnData &GetColumn(storage_t c);
 	idx_t GetColumnCount() const;
 	vector<shared_ptr<ColumnData>> &GetColumns();
 
 	template <TableScanType TYPE>
 	void TemplatedScan(TransactionData transaction, CollectionScanState &state, DataChunk &result);
 
-	static void CheckpointDeletes(VersionNode *versions, Serializer &serializer);
-	static shared_ptr<VersionNode> DeserializeDeletes(Deserializer &source);
+	vector<MetaBlockPointer> CheckpointDeletes(MetadataManager &manager);
+
+	bool HasUnloadedDeletes() const;
 
 private:
 	mutex row_group_lock;
-	mutex stats_lock;
-	vector<BlockPointer> column_pointers;
+	vector<MetaBlockPointer> column_pointers;
 	unique_ptr<atomic<bool>[]> is_loaded;
-};
-
-struct VersionNode {
-	unique_ptr<ChunkInfo> info[RowGroup::ROW_GROUP_VECTOR_COUNT];
-
-	void SetStart(idx_t start);
+	vector<MetaBlockPointer> deletes_pointers;
+	atomic<bool> deletes_is_loaded;
+	idx_t allocation_size;
 };
 
 } // namespace duckdb

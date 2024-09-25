@@ -19,6 +19,9 @@ namespace duckdb {
 //! SQLStatement is the base class of any type of SQL statement.
 class SQLStatement {
 public:
+	static constexpr const StatementType TYPE = StatementType::INVALID_STATEMENT;
+
+public:
 	explicit SQLStatement(StatementType type) : type(type) {
 	}
 	virtual ~SQLStatement() {
@@ -30,9 +33,7 @@ public:
 	idx_t stmt_location = 0;
 	//! The statement length within the query string
 	idx_t stmt_length = 0;
-	//! The number of prepared statement parameters (if any)
-	idx_t n_param = 0;
-	//! The map of named parameter to param index (if n_param and any named)
+	//! The map of named parameter to param index
 	case_insensitive_map_t<idx_t> named_param_map;
 	//! The query text that corresponds to this SQL statement
 	string query;
@@ -41,10 +42,7 @@ protected:
 	SQLStatement(const SQLStatement &other) = default;
 
 public:
-	DUCKDB_API virtual string ToString() const {
-		throw InternalException("ToString not supported for this type of SQLStatement: '%s'",
-		                        StatementTypeToString(type));
-	}
+	virtual string ToString() const = 0;
 	//! Create a copy of this SelectStatement
 	DUCKDB_API virtual unique_ptr<SQLStatement> Copy() const = 0;
 
@@ -52,18 +50,18 @@ public:
 public:
 	template <class TARGET>
 	TARGET &Cast() {
-		if (type != TARGET::TYPE) {
+		if (type != TARGET::TYPE && TARGET::TYPE != StatementType::INVALID_STATEMENT) {
 			throw InternalException("Failed to cast statement to type - statement type mismatch");
 		}
-		return (TARGET &)*this;
+		return reinterpret_cast<TARGET &>(*this);
 	}
 
 	template <class TARGET>
 	const TARGET &Cast() const {
-		if (type != TARGET::TYPE) {
+		if (type != TARGET::TYPE && TARGET::TYPE != StatementType::INVALID_STATEMENT) {
 			throw InternalException("Failed to cast statement to type - statement type mismatch");
 		}
-		return (const TARGET &)*this;
+		return reinterpret_cast<const TARGET &>(*this);
 	}
 };
 } // namespace duckdb

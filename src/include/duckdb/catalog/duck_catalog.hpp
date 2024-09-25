@@ -16,7 +16,7 @@ namespace duckdb {
 class DuckCatalog : public Catalog {
 public:
 	explicit DuckCatalog(AttachedDatabase &db);
-	~DuckCatalog();
+	~DuckCatalog() override;
 
 public:
 	bool IsDuckCatalog() override;
@@ -54,9 +54,12 @@ public:
 	                                                       unique_ptr<LogicalOperator> plan) override;
 
 	DatabaseSize GetDatabaseSize(ClientContext &context) override;
+	vector<MetadataBlockInfo> GetMetadataInfo(ClientContext &context) override;
 
 	DUCKDB_API bool InMemory() override;
 	DUCKDB_API string GetDBPath() override;
+
+	DUCKDB_API optional_idx GetCatalogVersion(ClientContext &context) override;
 
 private:
 	DUCKDB_API void DropSchema(CatalogTransaction transaction, DropInfo &info);

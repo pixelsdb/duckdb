@@ -31,7 +31,7 @@ public:
 
 public:
 	void Finalize(const PhysicalOperator &op, ExecutionContext &context) override {
-		context.thread.profiler.Flush(op, executor, "filter", 0);
+		context.thread.profiler.Flush(op);
 	}
 };
 
@@ -41,7 +41,7 @@ unique_ptr<OperatorState> PhysicalFilter::GetOperatorState(ExecutionContext &con
 
 OperatorResultType PhysicalFilter::ExecuteInternal(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                    GlobalOperatorState &gstate, OperatorState &state_p) const {
-	auto &state = (FilterState &)state_p;
+	auto &state = state_p.Cast<FilterState>();
 	idx_t result_count = state.executor.SelectExpression(input, state.sel);
 	if (result_count == input.size()) {
 		// nothing was filtered: skip adding any selection vectors
@@ -52,10 +52,10 @@ OperatorResultType PhysicalFilter::ExecuteInternal(ExecutionContext &context, Da
 	return OperatorResultType::NEED_MORE_INPUT;
 }
 
-string PhysicalFilter::ParamsToString() const {
-	auto result = expression->GetName();
-	result += "\n[INFOSEPARATOR]\n";
-	result += StringUtil::Format("EC: %llu", estimated_props->GetCardinality<idx_t>());
+InsertionOrderPreservingMap<string> PhysicalFilter::ParamsToString() const {
+	InsertionOrderPreservingMap<string> result;
+	result["__expression__"] = expression->GetName();
+	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;
 }
 

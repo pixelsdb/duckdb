@@ -9,14 +9,20 @@
 #pragma once
 
 #include "duckdb/common/enums/catalog_type.hpp"
-#include "duckdb/common/field_writer.hpp"
 #include "duckdb/parser/parsed_data/parse_info.hpp"
+#include "duckdb/parser/parsed_data/extra_drop_info.hpp"
+#include "duckdb/common/enums/on_entry_not_found.hpp"
 
 namespace duckdb {
+struct ExtraDropInfo;
 
 struct DropInfo : public ParseInfo {
-	DropInfo() : catalog(INVALID_CATALOG), schema(INVALID_SCHEMA), cascade(false) {
-	}
+public:
+	static constexpr const ParseInfoType TYPE = ParseInfoType::DROP_INFO;
+
+public:
+	DropInfo();
+	DropInfo(const DropInfo &info);
 
 	//! The catalog type to drop
 	CatalogType type;
@@ -33,45 +39,15 @@ struct DropInfo : public ParseInfo {
 	bool cascade = false;
 	//! Allow dropping of internal system entries
 	bool allow_drop_internal = false;
+	//! Extra info related to this drop
+	unique_ptr<ExtraDropInfo> extra_drop_info;
 
 public:
-	unique_ptr<DropInfo> Copy() const {
-		auto result = make_uniq<DropInfo>();
-		result->type = type;
-		result->catalog = catalog;
-		result->schema = schema;
-		result->name = name;
-		result->if_not_found = if_not_found;
-		result->cascade = cascade;
-		result->allow_drop_internal = allow_drop_internal;
-		return result;
-	}
+	virtual unique_ptr<DropInfo> Copy() const;
+	string ToString() const;
 
-	void Serialize(Serializer &serializer) const {
-		FieldWriter writer(serializer);
-		writer.WriteField<CatalogType>(type);
-		writer.WriteString(catalog);
-		writer.WriteString(schema);
-		writer.WriteString(name);
-		writer.WriteField(if_not_found);
-		writer.WriteField(cascade);
-		writer.WriteField(allow_drop_internal);
-		writer.Finalize();
-	}
-
-	static unique_ptr<ParseInfo> Deserialize(Deserializer &deserializer) {
-		FieldReader reader(deserializer);
-		auto drop_info = make_uniq<DropInfo>();
-		drop_info->type = reader.ReadRequired<CatalogType>();
-		drop_info->catalog = reader.ReadRequired<string>();
-		drop_info->schema = reader.ReadRequired<string>();
-		drop_info->name = reader.ReadRequired<string>();
-		drop_info->if_not_found = reader.ReadRequired<OnEntryNotFound>();
-		drop_info->cascade = reader.ReadRequired<bool>();
-		drop_info->allow_drop_internal = reader.ReadRequired<bool>();
-		reader.Finalize();
-		return std::move(drop_info);
-	}
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<ParseInfo> Deserialize(Deserializer &deserializer);
 };
 
 } // namespace duckdb

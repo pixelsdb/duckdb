@@ -20,14 +20,16 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::VACUUM;
 
 public:
-	PhysicalVacuum(unique_ptr<VacuumInfo> info, idx_t estimated_cardinality);
+	PhysicalVacuum(unique_ptr<VacuumInfo> info, optional_ptr<TableCatalogEntry> table,
+	               unordered_map<idx_t, idx_t> column_id_map, idx_t estimated_cardinality);
 
 	unique_ptr<VacuumInfo> info;
+	optional_ptr<TableCatalogEntry> table;
+	unordered_map<idx_t, idx_t> column_id_map;
 
 public:
 	// Source interface
-	void GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate,
-	             LocalSourceState &lstate) const override;
+	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override;
 
 	bool IsSource() const override {
 		return true;
@@ -38,11 +40,10 @@ public:
 	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override;
 	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;
 
-	SinkResultType Sink(ExecutionContext &context, GlobalSinkState &gstate_p, LocalSinkState &lstate_p,
-	                    DataChunk &input) const override;
-	void Combine(ExecutionContext &context, GlobalSinkState &gstate_p, LocalSinkState &lstate_p) const override;
+	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override;
+	SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override;
 	SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
-	                          GlobalSinkState &gstate) const override;
+	                          OperatorSinkFinalizeInput &input) const override;
 
 	bool IsSink() const override {
 		return info->has_table;

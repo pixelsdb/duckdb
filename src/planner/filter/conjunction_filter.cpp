@@ -1,5 +1,5 @@
 #include "duckdb/planner/filter/conjunction_filter.hpp"
-#include "duckdb/common/field_writer.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 
 namespace duckdb {
 
@@ -35,7 +35,7 @@ bool ConjunctionOrFilter::Equals(const TableFilter &other_p) const {
 	if (!ConjunctionFilter::Equals(other_p)) {
 		return false;
 	}
-	auto &other = (ConjunctionOrFilter &)other_p;
+	auto &other = other_p.Cast<ConjunctionOrFilter>();
 	if (other.child_filters.size() != child_filters.size()) {
 		return false;
 	}
@@ -47,14 +47,20 @@ bool ConjunctionOrFilter::Equals(const TableFilter &other_p) const {
 	return true;
 }
 
-void ConjunctionOrFilter::Serialize(FieldWriter &writer) const {
-	writer.WriteSerializableList(child_filters);
+unique_ptr<TableFilter> ConjunctionOrFilter::Copy() const {
+	auto result = make_uniq<ConjunctionOrFilter>();
+	for (auto &filter : child_filters) {
+		result->child_filters.push_back(filter->Copy());
+	}
+	return std::move(result);
 }
 
-unique_ptr<TableFilter> ConjunctionOrFilter::Deserialize(FieldReader &source) {
-	auto res = make_uniq<ConjunctionOrFilter>();
-	res->child_filters = source.ReadRequiredSerializableList<TableFilter>();
-	return std::move(res);
+unique_ptr<Expression> ConjunctionOrFilter::ToExpression(const Expression &column) const {
+	auto conjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR);
+	for (auto &filter : child_filters) {
+		conjunction->children.push_back(filter->ToExpression(column));
+	}
+	return std::move(conjunction);
 }
 
 ConjunctionAndFilter::ConjunctionAndFilter() : ConjunctionFilter(TableFilterType::CONJUNCTION_AND) {
@@ -90,7 +96,7 @@ bool ConjunctionAndFilter::Equals(const TableFilter &other_p) const {
 	if (!ConjunctionFilter::Equals(other_p)) {
 		return false;
 	}
-	auto &other = (ConjunctionAndFilter &)other_p;
+	auto &other = other_p.Cast<ConjunctionAndFilter>();
 	if (other.child_filters.size() != child_filters.size()) {
 		return false;
 	}
@@ -102,14 +108,20 @@ bool ConjunctionAndFilter::Equals(const TableFilter &other_p) const {
 	return true;
 }
 
-void ConjunctionAndFilter::Serialize(FieldWriter &writer) const {
-	writer.WriteSerializableList(child_filters);
+unique_ptr<TableFilter> ConjunctionAndFilter::Copy() const {
+	auto result = make_uniq<ConjunctionAndFilter>();
+	for (auto &filter : child_filters) {
+		result->child_filters.push_back(filter->Copy());
+	}
+	return std::move(result);
 }
 
-unique_ptr<TableFilter> ConjunctionAndFilter::Deserialize(FieldReader &source) {
-	auto res = make_uniq<ConjunctionAndFilter>();
-	res->child_filters = source.ReadRequiredSerializableList<TableFilter>();
-	return std::move(res);
+unique_ptr<Expression> ConjunctionAndFilter::ToExpression(const Expression &column) const {
+	auto conjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
+	for (auto &filter : child_filters) {
+		conjunction->children.push_back(filter->ToExpression(column));
+	}
+	return std::move(conjunction);
 }
 
 } // namespace duckdb

@@ -1,6 +1,9 @@
+add_subdirectory(union)
+
 add_library_unity(
   duckdb_func_cast
   OBJECT
+  array_casts.cpp
   blob_cast.cpp
   bit_cast.cpp
   cast_function_set.cpp
@@ -16,6 +19,7 @@ add_library_unity(
   time_casts.cpp
   union_casts.cpp
   uuid_casts.cpp
+  varint_casts.cpp
   vector_cast_helpers.cpp)
 
 set(ALL_OBJECT_FILES

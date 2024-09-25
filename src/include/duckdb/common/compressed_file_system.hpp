@@ -18,8 +18,8 @@ struct StreamData {
 	// various buffers & pointers
 	bool write = false;
 	bool refresh = false;
-	unique_ptr<data_t[]> in_buff;
-	unique_ptr<data_t[]> out_buff;
+	unsafe_unique_array<data_t> in_buff;
+	unsafe_unique_array<data_t> out_buff;
 	data_ptr_t out_buff_start = nullptr;
 	data_ptr_t out_buff_end = nullptr;
 	data_ptr_t in_buff_start = nullptr;
@@ -59,7 +59,9 @@ public:
 class CompressedFile : public FileHandle {
 public:
 	DUCKDB_API CompressedFile(CompressedFileSystem &fs, unique_ptr<FileHandle> child_handle_p, const string &path);
-	DUCKDB_API virtual ~CompressedFile() override;
+	DUCKDB_API ~CompressedFile() override;
+
+	DUCKDB_API idx_t GetProgress() override;
 
 	CompressedFileSystem &compressed_fs;
 	unique_ptr<FileHandle> child_handle;
@@ -74,6 +76,7 @@ public:
 	DUCKDB_API void Close() override;
 
 private:
+	idx_t current_position = 0;
 	unique_ptr<StreamWrapper> stream_wrapper;
 };
 

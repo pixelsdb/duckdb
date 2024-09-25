@@ -1,8 +1,9 @@
-#include "duckdb/common/field_writer.hpp"
 #include "duckdb/planner/table_filter.hpp"
+
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/null_filter.hpp"
+#include "duckdb/execution/operator/scan/physical_table_scan.hpp"
 
 namespace duckdb {
 
@@ -14,7 +15,7 @@ void TableFilterSet::PushFilter(idx_t column_index, unique_ptr<TableFilter> filt
 	} else {
 		// there is already a filter: AND it together
 		if (entry->second->filter_type == TableFilterType::CONJUNCTION_AND) {
-			auto &and_filter = (ConjunctionAndFilter &)*entry->second;
+			auto &and_filter = entry->second->Cast<ConjunctionAndFilter>();
 			and_filter.child_filters.push_back(std::move(filter));
 		} else {
 			auto and_filter = make_uniq<ConjunctionAndFilter>();
@@ -25,61 +26,52 @@ void TableFilterSet::PushFilter(idx_t column_index, unique_ptr<TableFilter> filt
 	}
 }
 
-//! Serializes a LogicalType to a stand-alone binary blob
-void TableFilterSet::Serialize(Serializer &serializer) const {
-	serializer.Write<idx_t>(filters.size());
+void DynamicTableFilterSet::ClearFilters(const PhysicalOperator &op) {
+	lock_guard<mutex> l(lock);
+	filters.erase(op);
+}
+
+void DynamicTableFilterSet::PushFilter(const PhysicalOperator &op, idx_t column_index, unique_ptr<TableFilter> filter) {
+	lock_guard<mutex> l(lock);
+	auto entry = filters.find(op);
+	optional_ptr<TableFilterSet> filter_ptr;
+	if (entry == filters.end()) {
+		auto filter_set = make_uniq<TableFilterSet>();
+		filter_ptr = filter_set.get();
+		filters[op] = std::move(filter_set);
+	} else {
+		filter_ptr = entry->second.get();
+	}
+	filter_ptr->PushFilter(column_index, std::move(filter));
+}
+
+bool DynamicTableFilterSet::HasFilters() const {
+	lock_guard<mutex> l(lock);
+	return !filters.empty();
+}
+
+unique_ptr<TableFilterSet>
+DynamicTableFilterSet::GetFinalTableFilters(const PhysicalTableScan &scan,
+                                            optional_ptr<TableFilterSet> existing_filters) const {
+	D_ASSERT(HasFilters());
+	auto result = make_uniq<TableFilterSet>();
+	if (existing_filters) {
+		for (auto &entry : existing_filters->filters) {
+			result->filters[entry.first] = entry.second->Copy();
+		}
+	}
 	for (auto &entry : filters) {
-		serializer.Write<idx_t>(entry.first);
-		entry.second->Serialize(serializer);
+		for (auto &filter : entry.second->filters) {
+			if (IsRowIdColumnId(scan.column_ids[filter.first])) {
+				// skip row id filters
+				continue;
+			}
+			result->filters[filter.first] = filter.second->Copy();
+		}
 	}
-}
-
-//! Deserializes a blob back into an LogicalType
-unique_ptr<TableFilterSet> TableFilterSet::Deserialize(Deserializer &source) {
-	auto len = source.Read<idx_t>();
-	auto res = make_uniq<TableFilterSet>();
-	for (idx_t i = 0; i < len; i++) {
-		auto key = source.Read<idx_t>();
-		auto value = TableFilter::Deserialize(source);
-		res->filters[key] = std::move(value);
+	if (result->filters.empty()) {
+		return nullptr;
 	}
-	return res;
-}
-
-//! Serializes a LogicalType to a stand-alone binary blob
-void TableFilter::Serialize(Serializer &serializer) const {
-	FieldWriter writer(serializer);
-	writer.WriteField<TableFilterType>(filter_type);
-	Serialize(writer);
-	writer.Finalize();
-}
-
-//! Deserializes a blob back into an LogicalType
-unique_ptr<TableFilter> TableFilter::Deserialize(Deserializer &source) {
-	unique_ptr<TableFilter> result;
-
-	FieldReader reader(source);
-	auto filter_type = reader.ReadRequired<TableFilterType>();
-	switch (filter_type) {
-	case TableFilterType::CONSTANT_COMPARISON:
-		result = ConstantFilter::Deserialize(reader);
-		break;
-	case TableFilterType::CONJUNCTION_AND:
-		result = ConjunctionAndFilter::Deserialize(reader);
-		break;
-	case TableFilterType::CONJUNCTION_OR:
-		result = ConjunctionOrFilter::Deserialize(reader);
-		break;
-	case TableFilterType::IS_NOT_NULL:
-		result = IsNotNullFilter::Deserialize(reader);
-		break;
-	case TableFilterType::IS_NULL:
-		result = IsNullFilter::Deserialize(reader);
-		break;
-	default:
-		throw NotImplementedException("Unsupported table filter type for deserialization");
-	}
-	reader.Finalize();
 	return result;
 }
 

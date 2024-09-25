@@ -4,8 +4,9 @@
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/base_pipeline_event.hpp"
-#include "duckdb/parallel/event.hpp"
+#include "duckdb/parallel/executor_task.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 
 namespace duckdb {
 
@@ -21,9 +22,10 @@ PhysicalOrder::PhysicalOrder(vector<LogicalType> types, vector<BoundOrderByNode>
 class OrderGlobalSinkState : public GlobalSinkState {
 public:
 	OrderGlobalSinkState(BufferManager &buffer_manager, const PhysicalOrder &order, RowLayout &payload_layout)
-	    : global_sort_state(buffer_manager, order.orders, payload_layout) {
+	    : order(order), global_sort_state(buffer_manager, order.orders, payload_layout) {
 	}
 
+	const PhysicalOrder &order;
 	//! Global sort state
 	GlobalSortState global_sort_state;
 	//! Memory usage per thread
@@ -69,10 +71,9 @@ unique_ptr<LocalSinkState> PhysicalOrder::GetLocalSinkState(ExecutionContext &co
 	return make_uniq<OrderLocalSinkState>(context.client, *this);
 }
 
-SinkResultType PhysicalOrder::Sink(ExecutionContext &context, GlobalSinkState &gstate_p, LocalSinkState &lstate_p,
-                                   DataChunk &input) const {
-	auto &gstate = gstate_p.Cast<OrderGlobalSinkState>();
-	auto &lstate = lstate_p.Cast<OrderLocalSinkState>();
+SinkResultType PhysicalOrder::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
+	auto &gstate = input.global_state.Cast<OrderGlobalSinkState>();
+	auto &lstate = input.local_state.Cast<OrderLocalSinkState>();
 
 	auto &global_sort_state = gstate.global_sort_state;
 	auto &local_sort_state = lstate.local_sort_state;
@@ -85,14 +86,14 @@ SinkResultType PhysicalOrder::Sink(ExecutionContext &context, GlobalSinkState &g
 	// Obtain sorting columns
 	auto &keys = lstate.keys;
 	keys.Reset();
-	lstate.key_executor.Execute(input, keys);
+	lstate.key_executor.Execute(chunk, keys);
 
 	auto &payload = lstate.payload;
-	payload.ReferenceColumns(input, projections);
+	payload.ReferenceColumns(chunk, projections);
 
 	// Sink the data into the local sort state
 	keys.Verify();
-	input.Verify();
+	chunk.Verify();
 	local_sort_state.SinkChunk(keys, payload);
 
 	// When sorting data reaches a certain size, we sort it
@@ -102,16 +103,19 @@ SinkResultType PhysicalOrder::Sink(ExecutionContext &context, GlobalSinkState &g
 	return SinkResultType::NEED_MORE_INPUT;
 }
 
-void PhysicalOrder::Combine(ExecutionContext &context, GlobalSinkState &gstate_p, LocalSinkState &lstate_p) const {
-	auto &gstate = gstate_p.Cast<OrderGlobalSinkState>();
-	auto &lstate = lstate_p.Cast<OrderLocalSinkState>();
+SinkCombineResultType PhysicalOrder::Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const {
+	auto &gstate = input.global_state.Cast<OrderGlobalSinkState>();
+	auto &lstate = input.local_state.Cast<OrderLocalSinkState>();
 	gstate.global_sort_state.AddLocalState(lstate.local_sort_state);
+
+	return SinkCombineResultType::FINISHED;
 }
 
 class PhysicalOrderMergeTask : public ExecutorTask {
 public:
-	PhysicalOrderMergeTask(shared_ptr<Event> event_p, ClientContext &context, OrderGlobalSinkState &state)
-	    : ExecutorTask(context), event(std::move(event_p)), context(context), state(state) {
+	PhysicalOrderMergeTask(shared_ptr<Event> event_p, ClientContext &context, OrderGlobalSinkState &state,
+	                       const PhysicalOperator &op_p)
+	    : ExecutorTask(context, std::move(event_p), op_p), context(context), state(state) {
 	}
 
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
@@ -124,18 +128,18 @@ public:
 	}
 
 private:
-	shared_ptr<Event> event;
 	ClientContext &context;
 	OrderGlobalSinkState &state;
 };
 
 class OrderMergeEvent : public BasePipelineEvent {
 public:
-	OrderMergeEvent(OrderGlobalSinkState &gstate_p, Pipeline &pipeline_p)
-	    : BasePipelineEvent(pipeline_p), gstate(gstate_p) {
+	OrderMergeEvent(OrderGlobalSinkState &gstate_p, Pipeline &pipeline_p, const PhysicalOperator &op_p)
+	    : BasePipelineEvent(pipeline_p), gstate(gstate_p), op(op_p) {
 	}
 
 	OrderGlobalSinkState &gstate;
+	const PhysicalOperator &op;
 
 public:
 	void Schedule() override {
@@ -143,11 +147,11 @@ public:
 
 		// Schedule tasks equal to the number of threads, which will each merge multiple partitions
 		auto &ts = TaskScheduler::GetScheduler(context);
-		idx_t num_threads = ts.NumberOfThreads();
+		auto num_threads = NumericCast<idx_t>(ts.NumberOfThreads());
 
-		vector<unique_ptr<Task>> merge_tasks;
+		vector<shared_ptr<Task>> merge_tasks;
 		for (idx_t tnum = 0; tnum < num_threads; tnum++) {
-			merge_tasks.push_back(make_uniq<PhysicalOrderMergeTask>(shared_from_this(), context, gstate));
+			merge_tasks.push_back(make_uniq<PhysicalOrderMergeTask>(shared_from_this(), context, gstate, op));
 		}
 		SetTasks(std::move(merge_tasks));
 	}
@@ -164,8 +168,8 @@ public:
 };
 
 SinkFinalizeType PhysicalOrder::Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
-                                         GlobalSinkState &gstate_p) const {
-	auto &state = gstate_p.Cast<OrderGlobalSinkState>();
+                                         OperatorSinkFinalizeInput &input) const {
+	auto &state = input.global_state.Cast<OrderGlobalSinkState>();
 	auto &global_sort_state = state.global_sort_state;
 
 	if (global_sort_state.sorted_blocks.empty()) {
@@ -186,7 +190,7 @@ SinkFinalizeType PhysicalOrder::Finalize(Pipeline &pipeline, Event &event, Clien
 void PhysicalOrder::ScheduleMergeTasks(Pipeline &pipeline, Event &event, OrderGlobalSinkState &state) {
 	// Initialize global sort state for a round of merging
 	state.global_sort_state.InitializeMergeRound();
-	auto new_event = make_shared<OrderMergeEvent>(state, pipeline);
+	auto new_event = make_shared_ptr<OrderMergeEvent>(state, pipeline, state.order);
 	event.InsertEvent(std::move(new_event));
 }
 
@@ -236,10 +240,9 @@ unique_ptr<LocalSourceState> PhysicalOrder::GetLocalSourceState(ExecutionContext
 	return make_uniq<PhysicalOrderLocalSourceState>(gstate);
 }
 
-void PhysicalOrder::GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate_p,
-                            LocalSourceState &lstate_p) const {
-	auto &gstate = gstate_p.Cast<PhysicalOrderGlobalSourceState>();
-	auto &lstate = lstate_p.Cast<PhysicalOrderLocalSourceState>();
+SourceResultType PhysicalOrder::GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const {
+	auto &gstate = input.global_state.Cast<PhysicalOrderGlobalSourceState>();
+	auto &lstate = input.local_state.Cast<PhysicalOrderLocalSourceState>();
 
 	if (lstate.scanner && lstate.scanner->Remaining() == 0) {
 		lstate.batch_index = gstate.next_batch_index++;
@@ -247,7 +250,7 @@ void PhysicalOrder::GetData(ExecutionContext &context, DataChunk &chunk, GlobalS
 	}
 
 	if (lstate.batch_index >= gstate.total_batches) {
-		return;
+		return SourceResultType::FINISHED;
 	}
 
 	if (!lstate.scanner) {
@@ -257,6 +260,8 @@ void PhysicalOrder::GetData(ExecutionContext &context, DataChunk &chunk, GlobalS
 	}
 
 	lstate.scanner->Scan(chunk);
+
+	return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
 }
 
 idx_t PhysicalOrder::GetBatchIndex(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate_p,
@@ -265,15 +270,17 @@ idx_t PhysicalOrder::GetBatchIndex(ExecutionContext &context, DataChunk &chunk, 
 	return lstate.batch_index;
 }
 
-string PhysicalOrder::ParamsToString() const {
-	string result = "ORDERS:\n";
+InsertionOrderPreservingMap<string> PhysicalOrder::ParamsToString() const {
+	InsertionOrderPreservingMap<string> result;
+	string orders_info;
 	for (idx_t i = 0; i < orders.size(); i++) {
 		if (i > 0) {
-			result += "\n";
+			orders_info += "\n";
 		}
-		result += orders[i].expression->ToString() + " ";
-		result += orders[i].type == OrderType::DESCENDING ? "DESC" : "ASC";
+		orders_info += orders[i].expression->ToString() + " ";
+		orders_info += orders[i].type == OrderType::DESCENDING ? "DESC" : "ASC";
 	}
+	result["__order_by__"] = orders_info;
 	return result;
 }
 

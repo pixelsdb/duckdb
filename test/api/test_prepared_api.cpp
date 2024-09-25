@@ -46,7 +46,7 @@ TEST_CASE("Test prepared statements API", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	result = prepare->Execute(13);
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
-	REQUIRE(prepare->n_param == 1);
+	REQUIRE(prepare->named_param_map.size() == 1);
 }
 
 TEST_CASE("Test type resolution of function with parameter expressions", "[api]") {
@@ -57,7 +57,7 @@ TEST_CASE("Test type resolution of function with parameter expressions", "[api]"
 
 	// can deduce type of prepared parameter here
 	auto prepared = con.Prepare("select 1 + $1");
-	REQUIRE(!prepared->error);
+	REQUIRE(!prepared->error.HasError());
 
 	result = prepared->Execute(1);
 	REQUIRE(CHECK_COLUMN(result, 0, {2}));
@@ -196,12 +196,12 @@ TEST_CASE("Test incorrect usage of prepared statements API", "[api]") {
 	auto prepare = con.Prepare("SELEC COUNT(*) FROM a WHERE i=$1");
 	// we cannot execute this prepared statement
 	REQUIRE(prepare->HasError());
-	REQUIRE_THROWS(prepare->Execute(12));
+	REQUIRE_FAIL(prepare->Execute(12));
 
 	// cannot prepare multiple statements at once
 	prepare = con.Prepare("SELECT COUNT(*) FROM a WHERE i=$1; SELECT 42+$2;");
 	REQUIRE(prepare->HasError());
-	REQUIRE_THROWS(prepare->Execute(12));
+	REQUIRE_FAIL(prepare->Execute(12));
 
 	// also not in the Query syntax
 	REQUIRE_FAIL(con.Query("SELECT COUNT(*) FROM a WHERE i=$1; SELECT 42+$2", 11));
@@ -256,27 +256,27 @@ TEST_CASE("Test prepared statement parameter counting", "[api]") {
 
 	auto p0 = con.Prepare("SELECT 42");
 	REQUIRE(!p0->HasError());
-	REQUIRE(p0->n_param == 0);
+	REQUIRE(p0->named_param_map.empty());
 
 	auto p1 = con.Prepare("SELECT $1::int");
 	REQUIRE(!p1->HasError());
-	REQUIRE(p1->n_param == 1);
+	REQUIRE(p1->named_param_map.size() == 1);
 
 	p1 = con.Prepare("SELECT ?::int");
 	REQUIRE(!p1->HasError());
-	REQUIRE(p1->n_param == 1);
+	REQUIRE(p1->named_param_map.size() == 1);
 
 	auto p2 = con.Prepare("SELECT $1::int");
 	REQUIRE(!p2->HasError());
-	REQUIRE(p2->n_param == 1);
+	REQUIRE(p2->named_param_map.size() == 1);
 
 	auto p3 = con.Prepare("SELECT ?::int, ?::string");
 	REQUIRE(!p3->HasError());
-	REQUIRE(p3->n_param == 2);
+	REQUIRE(p3->named_param_map.size() == 2);
 
 	auto p4 = con.Prepare("SELECT $1::int, $2::string");
 	REQUIRE(!p4->HasError());
-	REQUIRE(p4->n_param == 2);
+	REQUIRE(p4->named_param_map.size() == 2);
 }
 
 TEST_CASE("Test ANALYZE", "[api]") {
@@ -320,7 +320,7 @@ TEST_CASE("Test BLOB with PreparedStatement", "[api]") {
 
 	// Creating a blob buffer with almost ALL ASCII chars
 	uint8_t num_chars = 256 - 5; // skipping: '\0', '\n', '\15', ',', '\32'
-	duckdb::unique_ptr<char[]> blob_chars(new char[num_chars]);
+	auto blob_chars = make_unsafe_uniq_array<char>(num_chars);
 	char ch = '\0';
 	idx_t buf_idx = 0;
 	for (idx_t i = 0; i < 255; ++i, ++ch) {
@@ -335,7 +335,7 @@ TEST_CASE("Test BLOB with PreparedStatement", "[api]") {
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE blobs (b BYTEA);"));
 
 	// Insert blob values through a PreparedStatement
-	Value blob_val = Value::BLOB((const_data_ptr_t)blob_chars.get(), num_chars);
+	Value blob_val = Value::BLOB(const_data_ptr_cast(blob_chars.get()), num_chars);
 	duckdb::unique_ptr<PreparedStatement> ps = con.Prepare("INSERT INTO blobs VALUES (?::BYTEA)");
 	ps->Execute(blob_val);
 	REQUIRE(!ps->HasError());
@@ -475,4 +475,24 @@ TEST_CASE("Test ambiguous prepared statement parameter types", "[api]") {
 
 	result = prep->Execute("hello");
 	REQUIRE(CHECK_COLUMN(result, 0, {"hello"}));
+}
+
+TEST_CASE("Test prepared statements with SET", "[api]") {
+	duckdb::unique_ptr<QueryResult> result;
+	DuckDB db(nullptr);
+	Connection con(db);
+	con.EnableQueryVerification();
+
+	// create a prepared statement and use it to query
+	auto prepare = con.Prepare("SET default_null_order=$1");
+	REQUIRE(prepare->success);
+
+	// too many parameters
+	REQUIRE_FAIL(prepare->Execute("xxx", "yyy"));
+	// too few parameters
+	REQUIRE_FAIL(prepare->Execute());
+	// unsupported setting
+	REQUIRE_FAIL(prepare->Execute("unsupported_mode"));
+	// this works
+	REQUIRE_NO_FAIL(prepare->Execute("NULLS FIRST"));
 }

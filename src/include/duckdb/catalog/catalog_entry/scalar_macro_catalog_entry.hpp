@@ -24,10 +24,6 @@ public:
 public:
 	ScalarMacroCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateMacroInfo &info);
 
-public:
-	//! Serialize the meta information of the ScalarMacroCatalogEntry
-	void Serialize(Serializer &serializer) const override;
-	//! Deserializes to a CreateMacroInfo
-	static unique_ptr<CreateMacroInfo> Deserialize(Deserializer &source, ClientContext &context);
+	unique_ptr<CatalogEntry> Copy(ClientContext &context) const override;
 };
 } // namespace duckdb

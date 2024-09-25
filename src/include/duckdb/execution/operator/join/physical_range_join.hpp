@@ -45,12 +45,13 @@ public:
 
 	private:
 		// Merge the NULLs of all non-DISTINCT predicates into the primary so they sort to the end.
-		idx_t MergeNulls(const vector<JoinCondition> &conditions);
+		idx_t MergeNulls(Vector &primary, const vector<JoinCondition> &conditions);
 	};
 
 	class GlobalSortedTable {
 	public:
-		GlobalSortedTable(ClientContext &context, const vector<BoundOrderByNode> &orders, RowLayout &payload_layout);
+		GlobalSortedTable(ClientContext &context, const vector<BoundOrderByNode> &orders, RowLayout &payload_layout,
+		                  const PhysicalOperator &op);
 
 		inline idx_t Count() const {
 			return count;
@@ -77,21 +78,31 @@ public:
 		//! Schedules tasks to merge sort the current child's data during a Finalize phase
 		void ScheduleMergeTasks(Pipeline &pipeline, Event &event);
 
+		//! The hosting operator
+		const PhysicalOperator &op;
 		GlobalSortState global_sort_state;
 		//! Whether or not the RHS has NULL values
 		atomic<idx_t> has_null;
 		//! The total number of rows in the RHS
 		atomic<idx_t> count;
 		//! A bool indicating for each tuple in the RHS if they found a match (only used in FULL OUTER JOIN)
-		unique_ptr<bool[]> found_match;
+		unsafe_unique_array<bool> found_match;
 		//! Memory usage per thread
 		idx_t memory_per_thread;
 	};
 
 public:
-	PhysicalRangeJoin(LogicalOperator &op, PhysicalOperatorType type, unique_ptr<PhysicalOperator> left,
+	PhysicalRangeJoin(LogicalComparisonJoin &op, PhysicalOperatorType type, unique_ptr<PhysicalOperator> left,
 	                  unique_ptr<PhysicalOperator> right, vector<JoinCondition> cond, JoinType join_type,
 	                  idx_t estimated_cardinality);
+
+	// Projection mappings
+	using ProjectionMapping = vector<column_t>;
+	ProjectionMapping left_projection_map;
+	ProjectionMapping right_projection_map;
+
+	//!	The full set of types (left + right child)
+	vector<LogicalType> unprojected_types;
 
 public:
 	// Gather the result values and slice the payload columns to those values.
@@ -102,6 +113,9 @@ public:
 	// Apply a tail condition to the current selection
 	static idx_t SelectJoinTail(const ExpressionType &condition, Vector &left, Vector &right,
 	                            const SelectionVector *sel, idx_t count, SelectionVector *true_sel);
+
+	//!	Utility to project full width internal chunks to projected results
+	void ProjectResult(DataChunk &chunk, DataChunk &result) const;
 };
 
 } // namespace duckdb

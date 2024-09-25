@@ -1,30 +1,29 @@
-#include "duckdb/common/field_writer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/planner/operator/logical_distinct.hpp"
 
 namespace duckdb {
 
-string LogicalDistinct::ParamsToString() const {
-	string result = LogicalOperator::ParamsToString();
-	if (!distinct_targets.empty()) {
-		result += StringUtil::Join(distinct_targets, distinct_targets.size(), "\n",
-		                           [](const unique_ptr<Expression> &child) { return child->GetName(); });
-	}
+LogicalDistinct::LogicalDistinct(DistinctType distinct_type)
+    : LogicalOperator(LogicalOperatorType::LOGICAL_DISTINCT), distinct_type(distinct_type) {
+}
+LogicalDistinct::LogicalDistinct(vector<unique_ptr<Expression>> targets, DistinctType distinct_type)
+    : LogicalOperator(LogicalOperatorType::LOGICAL_DISTINCT), distinct_type(distinct_type),
+      distinct_targets(std::move(targets)) {
+}
 
+InsertionOrderPreservingMap<string> LogicalDistinct::ParamsToString() const {
+	auto result = LogicalOperator::ParamsToString();
+	if (!distinct_targets.empty()) {
+		result["Distinct Targets"] =
+		    StringUtil::Join(distinct_targets, distinct_targets.size(), "\n",
+		                     [](const unique_ptr<Expression> &child) { return child->GetName(); });
+	}
+	SetParamsEstimatedCardinality(result);
 	return result;
 }
-void LogicalDistinct::Serialize(FieldWriter &writer) const {
-	writer.WriteField<DistinctType>(distinct_type);
-	writer.WriteSerializableList(distinct_targets);
-	if (order_by) {
-		throw NotImplementedException("Serializing ORDER BY not yet supported");
-	}
-}
 
-unique_ptr<LogicalOperator> LogicalDistinct::Deserialize(LogicalDeserializationState &state, FieldReader &reader) {
-	auto distinct_type = reader.ReadRequired<DistinctType>();
-	auto distinct_targets = reader.ReadRequiredSerializableList<Expression>(state.gstate);
-	return make_uniq<LogicalDistinct>(std::move(distinct_targets), distinct_type);
+void LogicalDistinct::ResolveTypes() {
+	types = children[0]->types;
 }
 
 } // namespace duckdb

@@ -1,244 +1,242 @@
 #include "duckdb/execution/index/art/leaf.hpp"
 
+#include "duckdb/common/types.hpp"
 #include "duckdb/execution/index/art/art.hpp"
+#include "duckdb/execution/index/art/art_key.hpp"
+#include "duckdb/execution/index/art/base_leaf.hpp"
+#include "duckdb/execution/index/art/base_node.hpp"
+#include "duckdb/execution/index/art/iterator.hpp"
 #include "duckdb/execution/index/art/node.hpp"
 #include "duckdb/execution/index/art/prefix.hpp"
-#include "duckdb/storage/meta_block_reader.hpp"
-#include <cstring>
 
 namespace duckdb {
-idx_t Leaf::GetCapacity() const {
-	return IsInlined() ? 1 : rowids.ptr[0];
+
+void Leaf::New(Node &node, const row_t row_id) {
+	D_ASSERT(row_id < MAX_ROW_ID_LOCAL);
+
+	auto status = node.GetGateStatus();
+	node.Clear();
+
+	node.SetMetadata(static_cast<uint8_t>(INLINED));
+	node.SetRowId(row_id);
+	node.SetGateStatus(status);
 }
 
-bool Leaf::IsInlined() const {
-	return count <= 1;
-}
+void Leaf::New(ART &art, reference<Node> &node, const unsafe_vector<ARTKey> &row_ids, const idx_t start,
+               const idx_t count) {
+	D_ASSERT(count > 1);
+	D_ASSERT(!node.get().HasMetadata());
 
-row_t Leaf::GetRowId(idx_t index) {
-	D_ASSERT(index < count);
-	if (IsInlined()) {
-		return rowids.inlined;
-	} else {
-		D_ASSERT(rowids.ptr[0] >= count);
-		return rowids.ptr[index + 1];
-	}
-}
-
-row_t *Leaf::GetRowIds() {
-	if (IsInlined()) {
-		return &rowids.inlined;
-	} else {
-		return rowids.ptr + 1;
-	}
-}
-
-Leaf::Leaf() : Node(NodeType::NLeaf) {
-}
-
-Leaf::Leaf(Key &value, uint32_t depth, row_t row_id) : Node(NodeType::NLeaf) {
-	count = 1;
-	rowids.inlined = row_id;
-	D_ASSERT(value.len >= depth);
-	prefix = Prefix(value, depth, value.len - depth);
-}
-
-Leaf::Leaf(Key &value, uint32_t depth, row_t *row_ids_p, idx_t num_elements_p) : Node(NodeType::NLeaf) {
-	D_ASSERT(num_elements_p >= 1);
-	if (num_elements_p == 1) {
-		// we can inline the row ids
-		rowids.inlined = row_ids_p[0];
-	} else {
-		// new row ids of this leaf
-		count = 0;
-		Resize(row_ids_p, num_elements_p, num_elements_p);
-	}
-	count = num_elements_p;
-	D_ASSERT(value.len >= depth);
-	prefix = Prefix(value, depth, value.len - depth);
-}
-
-Leaf::Leaf(row_t *row_ids_p, idx_t num_elements_p, Prefix &prefix_p) : Node(NodeType::NLeaf) {
-	D_ASSERT(num_elements_p > 1);
-	D_ASSERT(row_ids_p[0] == row_t(num_elements_p)); // first element should contain capacity
-	rowids.ptr = row_ids_p;
-	count = num_elements_p;
-	prefix = prefix_p;
-}
-
-Leaf::Leaf(row_t row_id, Prefix &prefix_p) : Node(NodeType::NLeaf) {
-	rowids.inlined = row_id;
-	count = 1;
-	prefix = prefix_p;
-}
-
-Leaf::~Leaf() {
-	if (!IsInlined()) {
-		DeleteArray<row_t>(rowids.ptr, rowids.ptr[0] + 1);
-		count = 0;
-	}
-}
-
-idx_t Leaf::MemorySize(ART &, const bool &) {
-	if (IsInlined()) {
-		return prefix.MemorySize() + sizeof(*this) + sizeof(row_t);
-	}
-	return prefix.MemorySize() + sizeof(*this) + sizeof(row_t) * (GetCapacity() + 1);
-}
-
-row_t *Leaf::Resize(row_t *current_row_ids, uint32_t current_count, idx_t new_capacity) {
-	D_ASSERT(new_capacity >= current_count);
-	auto new_allocation = AllocateArray<row_t>(new_capacity + 1);
-	new_allocation[0] = new_capacity;
-	auto new_row_ids = new_allocation + 1;
-	memcpy(new_row_ids, current_row_ids, current_count * sizeof(row_t));
-	if (!IsInlined()) {
-		// delete the old data
-		DeleteArray<row_t>(rowids.ptr, rowids.ptr[0] + 1);
-	}
-	// set up the new pointers
-	rowids.ptr = new_allocation;
-	return new_row_ids;
-}
-
-void Leaf::Insert(ART &art, row_t row_id) {
-	auto capacity = GetCapacity();
-	row_t *row_ids = GetRowIds();
-	D_ASSERT(count <= capacity);
-
-	if (count == capacity) {
-		// grow array
-		if (IsInlined()) {
-			art.IncreaseMemorySize((capacity + 1) * sizeof(row_t));
-		} else {
-			art.IncreaseMemorySize(capacity * sizeof(row_t));
-		}
-		row_ids = Resize(row_ids, count, capacity * 2);
-	}
-	// insert new row ID
-	row_ids[count++] = row_id;
-}
-
-void Leaf::Remove(ART &art, row_t row_id) {
-	idx_t entry_offset = DConstants::INVALID_INDEX;
-	row_t *row_ids = GetRowIds();
-
-	// find the row ID in the leaf
+	// We cannot recurse into the leaf during Construct(...) because row IDs are not sorted.
 	for (idx_t i = 0; i < count; i++) {
-		if (row_ids[i] == row_id) {
-			entry_offset = i;
-			break;
-		}
+		idx_t offset = start + i;
+		art.Insert(node, row_ids[offset], 0, row_ids[offset], GateStatus::GATE_SET);
 	}
+	node.get().SetGateStatus(GateStatus::GATE_SET);
+}
 
-	// didn't find the row ID
-	if (entry_offset == DConstants::INVALID_INDEX) {
-		return;
-	}
+void Leaf::MergeInlined(ART &art, Node &l_node, Node &r_node) {
+	D_ASSERT(r_node.GetType() == INLINED);
 
-	// now empty leaf
-	if (IsInlined()) {
-		D_ASSERT(count == 1);
-		count--;
-		return;
-	}
+	ArenaAllocator arena_allocator(Allocator::Get(art.db));
+	auto key = ARTKey::CreateARTKey<row_t>(arena_allocator, r_node.GetRowId());
+	art.Insert(l_node, key, 0, key, l_node.GetGateStatus());
+	r_node.Clear();
+}
 
-	auto capacity = GetCapacity();
-	count--;
-	if (count == 1) {
-		// after erasing we can now inline the leaf
-		// delete the pointer and inline the remaining rowid
-		auto remaining_row_id = row_ids[0] == row_id ? row_ids[1] : row_ids[0];
-		DeleteArray<row_t>(rowids.ptr, rowids.ptr[0] + 1);
-		rowids.inlined = remaining_row_id;
-		art.DecreaseMemorySize(capacity * sizeof(row_t));
-		return;
-	}
+void Leaf::InsertIntoInlined(ART &art, Node &node, const ARTKey &row_id, idx_t depth, const GateStatus status) {
+	D_ASSERT(node.GetType() == INLINED);
 
-	// shrink array, if less than half full
-	capacity = GetCapacity();
-	if (capacity > 2 && count < capacity / 2) {
+	ArenaAllocator allocator(Allocator::Get(art.db));
+	auto key = ARTKey::CreateARTKey<row_t>(allocator, node.GetRowId());
 
-		auto new_capacity = capacity / 2;
-		art.DecreaseMemorySize((capacity - new_capacity) * sizeof(row_t));
-
-		auto new_allocation = AllocateArray<row_t>(new_capacity + 1);
-		new_allocation[0] = new_capacity;
-
-		auto new_row_ids = new_allocation + 1;
-		memcpy(new_row_ids, row_ids, entry_offset * sizeof(row_t));
-		memcpy(new_row_ids + entry_offset, row_ids + entry_offset + 1, (count - entry_offset) * sizeof(row_t));
-
-		DeleteArray<row_t>(rowids.ptr, rowids.ptr[0] + 1);
-		rowids.ptr = new_allocation;
-
+	GateStatus new_status;
+	if (status == GateStatus::GATE_NOT_SET || node.GetGateStatus() == GateStatus::GATE_SET) {
+		new_status = GateStatus::GATE_SET;
 	} else {
-		// move the trailing row IDs (after entry_offset)
-		memmove(row_ids + entry_offset, row_ids + entry_offset + 1, (count - entry_offset) * sizeof(row_t));
-	}
-}
-
-string Leaf::ToString(Node *node) {
-	Leaf *leaf = (Leaf *)node;
-	string str = "Leaf: [";
-	auto row_ids = leaf->GetRowIds();
-	for (idx_t i = 0; i < leaf->count; i++) {
-		str += i == 0 ? to_string(row_ids[i]) : ", " + to_string(row_ids[i]);
-	}
-	return str + "]";
-}
-
-void Leaf::Merge(ART &art, Node *&l_node, Node *&r_node) {
-	Leaf *l_n = (Leaf *)l_node;
-	Leaf *r_n = (Leaf *)r_node;
-
-	auto l_capacity = l_n->GetCapacity();
-	auto l_row_ids = l_n->GetRowIds();
-	auto r_row_ids = r_n->GetRowIds();
-
-	if (l_n->count + r_n->count > l_capacity) {
-		auto capacity = l_n->GetCapacity();
-		auto new_capacity = NextPowerOfTwo(l_n->count + r_n->count);
-		art.IncreaseMemorySize(sizeof(row_t) * (new_capacity - capacity));
-		l_row_ids = l_n->Resize(l_row_ids, l_n->count, new_capacity);
+		new_status = GateStatus::GATE_NOT_SET;
 	}
 
-	// append row_ids to l_n
-	memcpy(l_row_ids + l_n->count, r_row_ids, r_n->count * sizeof(row_t));
-	l_n->count += r_n->count;
-}
-
-BlockPointer Leaf::Serialize(duckdb::MetaBlockWriter &writer) {
-
-	auto ptr = writer.GetBlockPointer();
-	writer.Write(type);
-	prefix.Serialize(writer);
-	writer.Write<uint16_t>(count);
-
-	auto row_ids = GetRowIds();
-	for (idx_t i = 0; i < count; i++) {
-		writer.Write(row_ids[i]);
+	if (new_status == GateStatus::GATE_SET) {
+		depth = 0;
 	}
-	return ptr;
-}
+	node.Clear();
 
-void Leaf::Deserialize(ART &art, MetaBlockReader &reader) {
+	// Get the mismatching position.
+	D_ASSERT(row_id.len == key.len);
+	auto pos = row_id.GetMismatchPos(key, depth);
+	D_ASSERT(pos != DConstants::INVALID_INDEX);
+	D_ASSERT(pos >= depth);
+	auto byte = row_id.data[pos];
 
-	prefix.Deserialize(reader);
-	count = reader.Read<uint16_t>();
-	if (count == 1) {
-		// inlined
-		auto row_id = reader.Read<row_t>();
-		rowids.inlined = row_id;
-
+	// Create the (optional) prefix and the node.
+	reference<Node> next(node);
+	auto count = pos - depth;
+	if (count != 0) {
+		Prefix::New(art, next, row_id, depth, count);
+	}
+	if (pos == Prefix::ROW_ID_COUNT) {
+		Node7Leaf::New(art, next);
 	} else {
-		// non-inlined
-		auto row_ids = AllocateArray<row_t>(count + 1);
-		row_ids[0] = count;
-		for (idx_t i = 0; i < count; i++) {
-			row_ids[i + 1] = reader.Read<row_t>();
+		Node4::New(art, next);
+	}
+
+	// Create the children.
+	Node row_id_node;
+	Leaf::New(row_id_node, row_id.GetRowId());
+	Node remainder;
+	if (pos != Prefix::ROW_ID_COUNT) {
+		Leaf::New(remainder, key.GetRowId());
+	}
+
+	Node::InsertChild(art, next, key[pos], remainder);
+	Node::InsertChild(art, next, byte, row_id_node);
+	node.SetGateStatus(new_status);
+}
+
+void Leaf::TransformToNested(ART &art, Node &node) {
+	D_ASSERT(node.GetType() == LEAF);
+
+	ArenaAllocator allocator(Allocator::Get(art.db));
+	Node root = Node();
+
+	// Move all row IDs into the nested leaf.
+	reference<const Node> leaf_ref(node);
+	while (leaf_ref.get().HasMetadata()) {
+		auto &leaf = Node::Ref<const Leaf>(art, leaf_ref, LEAF);
+		for (uint8_t i = 0; i < leaf.count; i++) {
+			auto row_id = ARTKey::CreateARTKey<row_t>(allocator, leaf.row_ids[i]);
+			art.Insert(root, row_id, 0, row_id, GateStatus::GATE_SET);
 		}
-		rowids.ptr = row_ids;
+		leaf_ref = leaf.ptr;
+	}
+
+	root.SetGateStatus(GateStatus::GATE_SET);
+	Node::Free(art, node);
+	node = root;
+}
+
+void Leaf::TransformToDeprecated(ART &art, Node &node) {
+	D_ASSERT(node.GetGateStatus() == GateStatus::GATE_SET || node.GetType() == LEAF);
+
+	// Early-out, if we never transformed this leaf.
+	if (node.GetGateStatus() == GateStatus::GATE_NOT_SET) {
+		return;
+	}
+
+	// Collect all row IDs and free the nested leaf.
+	unsafe_vector<row_t> row_ids;
+	Iterator it(art);
+	it.FindMinimum(node);
+	ARTKey empty_key = ARTKey();
+	it.Scan(empty_key, NumericLimits<row_t>().Maximum(), row_ids, false);
+	Node::Free(art, node);
+	D_ASSERT(row_ids.size() > 1);
+
+	// Create the deprecated leaves.
+	idx_t remaining = row_ids.size();
+	idx_t copy_count = 0;
+	reference<Node> ref(node);
+	while (remaining) {
+		ref.get() = Node::GetAllocator(art, LEAF).New();
+		ref.get().SetMetadata(static_cast<uint8_t>(LEAF));
+
+		auto &leaf = Node::Ref<Leaf>(art, ref, LEAF);
+		auto min = MinValue(UnsafeNumericCast<idx_t>(LEAF_SIZE), remaining);
+		leaf.count = UnsafeNumericCast<uint8_t>(min);
+
+		for (uint8_t i = 0; i < leaf.count; i++) {
+			leaf.row_ids[i] = row_ids[copy_count + i];
+		}
+
+		copy_count += leaf.count;
+		remaining -= leaf.count;
+
+		ref = leaf.ptr;
+		leaf.ptr.Clear();
+	}
+}
+
+//===--------------------------------------------------------------------===//
+// Deprecated code paths.
+//===--------------------------------------------------------------------===//
+
+void Leaf::DeprecatedFree(ART &art, Node &node) {
+	D_ASSERT(node.GetType() == LEAF);
+
+	Node next;
+	while (node.HasMetadata()) {
+		next = Node::Ref<Leaf>(art, node, LEAF).ptr;
+		Node::GetAllocator(art, LEAF).Free(node);
+		node = next;
+	}
+	node.Clear();
+}
+
+bool Leaf::DeprecatedGetRowIds(ART &art, const Node &node, unsafe_vector<row_t> &row_ids, const idx_t max_count) {
+	D_ASSERT(node.GetType() == LEAF);
+
+	reference<const Node> ref(node);
+	while (ref.get().HasMetadata()) {
+
+		auto &leaf = Node::Ref<const Leaf>(art, ref, LEAF);
+		if (row_ids.size() + leaf.count > max_count) {
+			return false;
+		}
+		for (uint8_t i = 0; i < leaf.count; i++) {
+			row_ids.push_back(leaf.row_ids[i]);
+		}
+		ref = leaf.ptr;
+	}
+	return true;
+}
+
+void Leaf::DeprecatedVacuum(ART &art, Node &node) {
+	D_ASSERT(node.HasMetadata());
+	D_ASSERT(node.GetType() == LEAF);
+
+	auto &allocator = Node::GetAllocator(art, LEAF);
+	reference<Node> ref(node);
+	while (ref.get().HasMetadata()) {
+		if (allocator.NeedsVacuum(ref)) {
+			ref.get() = allocator.VacuumPointer(ref);
+			ref.get().SetMetadata(static_cast<uint8_t>(LEAF));
+		}
+		auto &leaf = Node::Ref<Leaf>(art, ref, LEAF);
+		ref = leaf.ptr;
+	}
+}
+
+string Leaf::DeprecatedVerifyAndToString(ART &art, const Node &node, const bool only_verify) {
+	D_ASSERT(node.GetType() == LEAF);
+
+	string str = "";
+	reference<const Node> ref(node);
+
+	while (ref.get().HasMetadata()) {
+		auto &leaf = Node::Ref<const Leaf>(art, ref, LEAF);
+		D_ASSERT(leaf.count <= LEAF_SIZE);
+
+		str += "Leaf [count: " + to_string(leaf.count) + ", row IDs: ";
+		for (uint8_t i = 0; i < leaf.count; i++) {
+			str += to_string(leaf.row_ids[i]) + "-";
+		}
+		str += "] ";
+		ref = leaf.ptr;
+	}
+
+	return only_verify ? "" : str;
+}
+
+void Leaf::DeprecatedVerifyAllocations(ART &art, unordered_map<uint8_t, idx_t> &node_counts) const {
+	auto idx = Node::GetAllocatorIdx(LEAF);
+	node_counts[idx]++;
+
+	reference<const Node> ref(ptr);
+	while (ref.get().HasMetadata()) {
+		auto &leaf = Node::Ref<const Leaf>(art, ref, LEAF);
+		node_counts[idx]++;
+		ref = leaf.ptr;
 	}
 }
 

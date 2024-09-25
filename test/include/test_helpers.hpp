@@ -23,8 +23,8 @@
 #include "compare_result.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/types.hpp"
-
 namespace duckdb {
 
 bool TestForceStorage();
@@ -37,6 +37,7 @@ void TestDeleteDirectory(string path);
 void TestCreateDirectory(string path);
 void TestDeleteFile(string path);
 void TestChangeDirectory(string path);
+string TestGetCurrentDirectory();
 string TestDirectoryPath();
 string TestCreatePath(string suffix);
 unique_ptr<DBConfig> GetTestConfig();
@@ -44,6 +45,8 @@ bool TestIsInternalError(unordered_set<string> &internal_error_messages, const s
 void SetTestDirectory(string path);
 void SetDebugInitialize(int value);
 void SetSingleThreaded();
+void AddRequire(string require);
+bool IsRequired(string require);
 string GetTestDirectory();
 string GetCSVPath();
 void WriteCSV(string path, const char *csv);
@@ -58,6 +61,13 @@ bool NO_FAIL(duckdb::unique_ptr<QueryResult> result);
 #define COMPARE_CSV(result, csv, header)                                                                               \
 	{                                                                                                                  \
 		auto res = compare_csv(*result, csv, header);                                                                  \
+		if (!res.empty())                                                                                              \
+			FAIL(res);                                                                                                 \
+	}
+
+#define COMPARE_CSV_COLLECTION(collection, csv, header)                                                                \
+	{                                                                                                                  \
+		auto res = compare_csv_collection(collection, csv, header);                                                    \
 		if (!res.empty())                                                                                              \
 			FAIL(res);                                                                                                 \
 	}

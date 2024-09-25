@@ -27,7 +27,7 @@ ZstdStreamWrapper::~ZstdStreamWrapper() {
 	}
 	try {
 		Close();
-	} catch (...) {
+	} catch (...) { // NOLINT: swallow exceptions in destructor
 	}
 }
 
@@ -61,9 +61,9 @@ bool ZstdStreamWrapper::Read(StreamData &sd) {
 		throw IOException(duckdb_zstd::ZSTD_getErrorName(res));
 	}
 
-	sd.in_buff_start = (data_ptr_t)in_buffer.src + in_buffer.pos;
-	sd.in_buff_end = (data_ptr_t)in_buffer.src + in_buffer.size;
-	sd.out_buff_end = (data_ptr_t)out_buffer.dst + out_buffer.pos;
+	sd.in_buff_start = (data_ptr_t)in_buffer.src + in_buffer.pos;  // NOLINT
+	sd.in_buff_end = (data_ptr_t)in_buffer.src + in_buffer.size;   // NOLINT
+	sd.out_buff_end = (data_ptr_t)out_buffer.dst + out_buffer.pos; // NOLINT
 	return false;
 }
 
@@ -100,7 +100,7 @@ void ZstdStreamWrapper::Write(CompressedFile &file, StreamData &sd, data_ptr_t u
 			sd.out_buff_start = sd.out_buff.get();
 		}
 		uncompressed_data += input_consumed;
-		remaining -= input_consumed;
+		remaining -= UnsafeNumericCast<int64_t>(input_consumed);
 	}
 }
 
@@ -155,15 +155,19 @@ void ZstdStreamWrapper::Close() {
 
 class ZStdFile : public CompressedFile {
 public:
-	ZStdFile(duckdb::unique_ptr<FileHandle> child_handle_p, const string &path, bool write)
+	ZStdFile(unique_ptr<FileHandle> child_handle_p, const string &path, bool write)
 	    : CompressedFile(zstd_fs, std::move(child_handle_p), path) {
 		Initialize(write);
+	}
+
+	FileCompressionType GetFileCompressionType() override {
+		return FileCompressionType::ZSTD;
 	}
 
 	ZStdFileSystem zstd_fs;
 };
 
-unique_ptr<FileHandle> ZStdFileSystem::OpenCompressedFile(duckdb::unique_ptr<FileHandle> handle, bool write) {
+unique_ptr<FileHandle> ZStdFileSystem::OpenCompressedFile(unique_ptr<FileHandle> handle, bool write) {
 	auto path = handle->path;
 	return make_uniq<ZStdFile>(std::move(handle), path, write);
 }

@@ -3,10 +3,14 @@
 # group: [parallel]
 
 statement ok
+PRAGMA enable_verification
+
+statement ok
 SET default_null_order='nulls_first';
 
 statement ok
 PRAGMA verify_parallelism
+
 
 query IIII
 SELECT id, value, a, part
@@ -97,3 +101,4 @@ Sunday
 NULL
 NULL
 NULL
+

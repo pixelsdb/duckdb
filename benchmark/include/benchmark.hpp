@@ -29,7 +29,7 @@ struct BenchmarkState {
 //! new benchmarks
 class Benchmark {
 
-	constexpr static size_t DEFAULT_NRUNS = 5;
+	constexpr static size_t DEFAULT_NRUNS = 1;
 	Benchmark(Benchmark &) = delete;
 
 public:

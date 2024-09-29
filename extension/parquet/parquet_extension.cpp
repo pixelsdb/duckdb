@@ -624,6 +624,8 @@ public:
 		}
 
 		auto file_list = multi_file_reader->CreateFileList(context, input.inputs[0]);
+
+		auto files=file_list->GetPaths();
 		return ParquetScanBindInternal(context, std::move(multi_file_reader), std::move(file_list), return_types, names,
 		                               parquet_options);
 	}

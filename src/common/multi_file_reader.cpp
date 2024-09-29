@@ -60,6 +60,7 @@ vector<string> MultiFileReader::ParsePaths(const Value &input) {
 	}
 
 	if (input.type().id() == LogicalTypeId::VARCHAR) {
+		// add conditions to handle *
 		return {StringValue::Get(input)};
 	} else if (input.type().id() == LogicalTypeId::LIST) {
 		vector<string> paths;
@@ -85,7 +86,8 @@ unique_ptr<MultiFileList> MultiFileReader::CreateFileList(ClientContext &context
 	if (!config.options.enable_external_access) {
 		throw PermissionException("Scanning %s files is disabled through configuration", function_name);
 	}
-	vector<string> result_files;
+//	vector<string> result_files;
+
 
 	auto res = make_uniq<GlobMultiFileList>(context, paths, options);
 	if (res->GetExpandResult() == FileExpandResult::NO_FILES && options == FileGlobOptions::DISALLOW_EMPTY) {
@@ -97,7 +99,13 @@ unique_ptr<MultiFileList> MultiFileReader::CreateFileList(ClientContext &context
 unique_ptr<MultiFileList> MultiFileReader::CreateFileList(ClientContext &context, const Value &input,
                                                           FileGlobOptions options) {
 	auto paths = ParsePaths(input);
-	return CreateFileList(context, paths, options);
+	vector<string> files;
+	if(paths.size()==1){
+		FileSystem &fs = FileSystem::GetFileSystem(context);
+		auto file_name=paths.get(0);
+		files = fs.GlobFiles(file_name, context, options);
+	}
+	return CreateFileList(context, files, options);
 }
 
 bool MultiFileReader::ParseOption(const string &key, const Value &val, MultiFileReaderOptions &options,

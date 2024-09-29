@@ -122,6 +122,7 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 
 	auto state = benchmark->Initialize(configuration);
 	auto nruns = benchmark->NRuns();
+	LogLine("NRuns: "+std::to_string(nruns)+"\n");
 	for (size_t i = 0; i < nruns; i++) {
 		bool hotrun = i >= 0;
 		if (hotrun) {

@@ -8,14 +8,12 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "test_helpers.hpp"
-<<<<<<< HEAD
-#include <iostream>
-=======
+
 #include "duckdb/common/helper.hpp"
 #include "duckdb/execution/operator/helper/physical_result_collector.hpp"
 #include "duckdb/common/arrow/physical_arrow_collector.hpp"
+//#incoude <iostream>
 
->>>>>>> duckdb/main
 #include <fstream>
 #include <sstream>
 
@@ -375,6 +373,12 @@ unique_ptr<BenchmarkState> InterpretedBenchmark::Initialize(BenchmarkConfigurati
 		DeleteDatabase(full_db_path);
 		state = make_uniq<InterpretedBenchmarkState>(full_db_path);
 	}
+//    for(auto &extension:extensions){
+////        std::cout<<"Extension: "+extension<<std::endl;
+//        printf("extension %s\n",extension);
+//    }
+
+
 	extensions.insert("parquet");
 	for (auto &extension : extensions) {
 		auto result = ExtensionHelper::LoadExtension(state->db, extension);
@@ -573,10 +577,7 @@ string InterpretedBenchmark::VerifyInternal(BenchmarkState *state_p, Materialize
 
 string InterpretedBenchmark::Verify(BenchmarkState *state_p) {
 	auto &state = (InterpretedBenchmarkState &)*state_p;
-<<<<<<< HEAD
-	std::cout<<"RowCount="<<state.result->RowCount()<<std::endl;
 
-=======
 	if (!state.result) {
 		D_ASSERT(result_type != QueryResultType::MATERIALIZED_RESULT);
 		return string();
@@ -585,18 +586,12 @@ string InterpretedBenchmark::Verify(BenchmarkState *state_p) {
 	if (state.result->HasError()) {
 		return state.result->GetError();
 	}
->>>>>>> duckdb/main
+
 	if (result_column_count == 0) {
 		// no result specified
 		return string();
 	}
-<<<<<<< HEAD
 
-	if (state.result->HasError()) {
-		return state.result->GetError();
-	}
-=======
->>>>>>> duckdb/main
 	if (!result_query.empty()) {
 		// we are running a result query
 		// store the current result in a table called "__answer"

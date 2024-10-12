@@ -38,7 +38,7 @@ def run_benchmark(benchmark_path, draw=0):
 
                 # Run the command and capture output
                 try:
-                    cmd=os.path.join(pixels_home,"cpp/build/release/benchmark/benchmark_runner")+" \""+benchmark_file+"\""
+                    cmd=os.path.join(pixels_home,"build/release/benchmark/benchmark_runner")+" \""+benchmark_file+"\""
                     if verbose:
                         print(cmd)
                     output=subprocess.getoutput(cmd)

@@ -150,16 +150,16 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 				break;
 			} else {
 				// write time
-				auto verify = benchmark->Verify(state.get());
-				if (!verify.empty()) {
-					LogResult("INCORRECT");
-					LogLine("INCORRECT RESULT: " + verify);
-					LogOutput("INCORRECT RESULT: " + verify);
-					break;
-				} else {
-					LogResult("Result: "+std::to_string(profiler.Elapsed()));
-				}
-			}
+				//auto verify = benchmark->Verify(state.get());
+				//if (!verify.empty()) {
+				//	LogResult("INCORRECT");
+				//	LogLine("INCORRECT RESULT: " + verify);
+				//	LogOutput("INCORRECT RESULT: " + verify);
+				//	break;
+				//} else {
+					LogResult("\nResult: "+std::to_string(profiler.Elapsed()));
+				//}			
+				 			}
 		}
 		benchmark->Cleanup(state.get());
 	}

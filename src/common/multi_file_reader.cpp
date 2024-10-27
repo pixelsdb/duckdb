@@ -60,7 +60,6 @@ vector<string> MultiFileReader::ParsePaths(const Value &input) {
 	}
 
 	if (input.type().id() == LogicalTypeId::VARCHAR) {
-		// add conditions to handle *
 		return {StringValue::Get(input)};
 	} else if (input.type().id() == LogicalTypeId::LIST) {
 		vector<string> paths;
@@ -72,7 +71,6 @@ vector<string> MultiFileReader::ParsePaths(const Value &input) {
 				throw ParserException("%s reader can only take a list of strings as a parameter", function_name);
 			}
 			paths.push_back(StringValue::Get(val));
-
 		}
 		return paths;
 	} else {
@@ -87,7 +85,6 @@ unique_ptr<MultiFileList> MultiFileReader::CreateFileList(ClientContext &context
 		throw PermissionException("Scanning %s files is disabled through configuration", function_name);
 	}
 //	vector<string> result_files;
-
 
 	auto res = make_uniq<GlobMultiFileList>(context, paths, options);
 	if (res->GetExpandResult() == FileExpandResult::NO_FILES && options == FileGlobOptions::DISALLOW_EMPTY) {

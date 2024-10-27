@@ -3,7 +3,6 @@ cmake_minimum_required(VERSION 3.5...3.29)
 project(ParquetExtension)
 
 include_directories(
-
   include
   ../../third_party/lz4
   ../../third_party/parquet
@@ -13,7 +12,6 @@ include_directories(
   ../../third_party/mbedtls
   ../../third_party/mbedtls/include
   ../../third_party/brotli/include)
-
 
 set(PARQUET_EXTENSION_FILES
     column_reader.cpp

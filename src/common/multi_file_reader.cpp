@@ -100,11 +100,13 @@ unique_ptr<MultiFileList> MultiFileReader::CreateFileList(ClientContext &context
                                                           FileGlobOptions options) {
 	auto paths = ParsePaths(input);
 	vector<string> files;
-	if(paths.size()==1){
-		FileSystem &fs = FileSystem::GetFileSystem(context);
-		auto file_name=paths.get(0);
-		files = fs.GlobFiles(file_name, context, options);
-	}
+
+    FileSystem &fs = FileSystem::GetFileSystem(context);
+
+    for (const auto &path : paths) {
+        auto file_list = fs.GlobFiles(path, context, options);
+        files.insert(files.end(), file_list.begin(), file_list.end());
+    }
 	return CreateFileList(context, files, options);
 }
 

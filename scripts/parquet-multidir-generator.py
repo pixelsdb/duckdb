@@ -6,7 +6,7 @@ import shutil
 # The script copies all files in ${input}/${table}/${suffix}/ directory to ${output}/${table}/${suffix}/
 # input, output and suffix should be designated, while table is detected automatically.
 # For example, we execute the following script:
-# cd pixels-duckdb
+# cd pixels-duckdb/duckdb
 # python scripts/parquet-multidir-generator.py -i /data/tpch-300 -o /data1/tpch-300-partition1 /data2/tpch-300-partition2
 # The input path layout is:
 # input:

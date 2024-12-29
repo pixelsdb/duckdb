@@ -8,8 +8,34 @@ name Q${QUERY_NUMBER_PADDED}
 group Clickbench
 
 load
-CREATE VIEW hits AS SELECT * FROM pixels_scan(["/nvme1/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme2/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme3/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme4/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme5/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme6/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme7/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme9/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme10/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme11/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme14/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme15/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme16/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme17/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme18/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme19/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme20/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme21/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme22/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme23/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme24/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme25/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme26/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*","/nvme27/liyu/pixels-data/clickbench-e0/hits/v-0-ordered/*"]);
+CREATE VIEW hits AS SELECT * FROM pixels_scan([
+                                                  "/data/9a3-01/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-02/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-03/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-04/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-05/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-06/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-07/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-08/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-09/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-10/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-11/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-12/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-13/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-14/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-15/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-16/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-17/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-18/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-19/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-20/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-21/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-22/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-23/clickbench/pixels-e0/hits/v-0-ordered/*",
+                                                  "/data/9a3-24/clickbench/pixels-e0/hits/v-0-ordered/*"
+                                              ]
+)
 
 run benchmark/clickbench/queries/q${QUERY_NUMBER_PADDED}.sql
 
-# result benchmark/clickbench/answers/q${QUERY_NUMBER_PADDED}.csv
+result benchmark/clickbench/answers/q${QUERY_NUMBER_PADDED}.csv

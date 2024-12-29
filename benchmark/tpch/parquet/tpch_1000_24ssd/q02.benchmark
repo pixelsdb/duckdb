@@ -1,0 +1,4 @@
+template benchmark/tpch/parquet/parquet_tpch-1000_24ssd_template.benchmark.in
+SF_NUMBER=300
+SF_NUMBER_UNDERSCORE=300
+QUERY_NUMBER_PADDED=02

@@ -122,6 +122,7 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 
 	auto state = benchmark->Initialize(configuration);
 	auto nruns = benchmark->NRuns();
+
 	LogLine("NRuns: "+std::to_string(nruns)+"\n");
 	for (size_t i = 0; i < nruns; i++) {
 		bool hotrun = i >= 0;
@@ -151,13 +152,14 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 			} else {
 				// write time
 				auto verify = benchmark->Verify(state.get());
+                LogLine("MAYBE RESULT: "+verify);
 				if (!verify.empty()) {
 					LogResult("INCORRECT");
 					LogLine("INCORRECT RESULT: " + verify);
 					LogOutput("INCORRECT RESULT: " + verify);
 					break;
 				} else {
-					LogResult("Result: "+std::to_string(profiler.Elapsed()));
+					LogResult("\nResult: "+std::to_string(profiler.Elapsed()));
 				}
 			}
 		}

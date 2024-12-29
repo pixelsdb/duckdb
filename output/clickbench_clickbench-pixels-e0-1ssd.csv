@@ -1,0 +1,10 @@
+Benchmark,Result
+q01.benchmark,0.288413
+q04.benchmark,0.668988
+q05.benchmark,1.766332
+q07.benchmark,0.514204
+q09.benchmark,2.66064
+q16.benchmark,1.772852
+q20.benchmark,0.963183
+q41.benchmark,2.556592
+q42.benchmark,2.91125

@@ -10,13 +10,13 @@ require pixels
 require tpch
 
 load
-CREATE VIEW orders AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/orders/v-0-ordered/*"]);
-CREATE VIEW customer AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/customer/v-0-ordered/*"]);
-CREATE VIEW lineitem AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/lineitem/v-0-ordered/*"]);
-CREATE VIEW supplier AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/supplier/v-0-ordered/*"]);
-CREATE VIEW partsupp AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/partsupp/v-0-ordered/*"]);
-CREATE VIEW region AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/region/v-0-ordered/*"]);
-CREATE VIEW part AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/part/v-0-ordered/*"]);
-CREATE VIEW nation AS SELECT * FROM pixels_scan(["/nvme28/liyu/pixels-data/tpch-300-e0/nation/v-0-ordered/*"]);
+CREATE VIEW orders AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/orders/v-0-ordered/*"]);
+CREATE VIEW customer AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/customer/v-0-ordered/*"]);
+CREATE VIEW lineitem AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/lineitem/v-0-ordered/*"]);
+CREATE VIEW supplier AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/supplier/v-0-ordered/*"]);
+CREATE VIEW partsupp AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/partsupp/v-0-ordered/*"]);
+CREATE VIEW region AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/region/v-0-ordered/*"]);
+CREATE VIEW part AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/part/v-0-ordered/*"]);
+CREATE VIEW nation AS SELECT * FROM pixels_scan(["/data/9a3-03/tpch-900-e0/pixels/nation/v-0-ordered/*"]);
 
 run extension/tpch/dbgen/queries/q${QUERY_NUMBER_PADDED}.sql

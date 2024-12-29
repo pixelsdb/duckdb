@@ -38,12 +38,12 @@ def run_benchmark(benchmark_path, draw=0):
 
                 # Run the command and capture output
                 try:
-                    cmd=os.path.join(pixels_home,"cpp/build/release/benchmark/benchmark_runner")+" \""+benchmark_file+"\""
+                    cmd=os.path.join(pixels_home,"cpp/build/release/benchmark/benchmark_runner --disable-timeout" )+" \""+benchmark_file+"\""
                     if verbose:
                         print(cmd)
                     output=subprocess.getoutput(cmd)
 
-                    # print(output)
+                    print(output)
                     # Find the result in the output
                     for line in output.splitlines():
                         if line.startswith('Result:'):

@@ -22,6 +22,9 @@ void string_t::VerifyUTF8() const {
 
 	auto utf_type = Utf8Proc::Analyze(dataptr, GetSize());
 	(void)utf_type;
+	if(utf_type==UnicodeType::INVALID){
+		std::cout<<dataptr<<std::endl;
+	}
 	D_ASSERT(utf_type != UnicodeType::INVALID);
 }
 

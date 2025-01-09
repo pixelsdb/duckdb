@@ -1,0 +1,17 @@
+# name: ${FILE_PATH}
+# description: ${DESCRIPTION}
+# group: [clickbench]
+
+require pixels
+
+name Q${QUERY_NUMBER_PADDED}
+group Clickbench
+
+
+load
+set threads =1;
+CREATE VIEW hits AS SELECT * FROM pixels_scan(["/data/9a3-01/clickbench/pixels-e0/hits/v-0-ordered/20241206102803_1.pxl"]);
+
+run benchmark/clickbench/queries/q${QUERY_NUMBER_PADDED}.sql
+
+# result benchmark/clickbench/answers/q${QUERY_NUMBER_PADDED}.csv

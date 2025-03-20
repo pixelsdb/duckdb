@@ -162,6 +162,7 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 					LogResult("\nResult: "+std::to_string(profiler.Elapsed()));
 				}
 			}
+
 		}
 		benchmark->Cleanup(state.get());
 	}

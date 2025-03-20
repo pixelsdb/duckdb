@@ -103,10 +103,10 @@ public:
 	DUCKDB_API explicit Vector(LogicalType type, idx_t capacity = STANDARD_VECTOR_SIZE);
 	//! Create an empty standard vector with a type, equivalent to calling Vector(type, true, false)
 	DUCKDB_API explicit Vector(const VectorCache &cache);
-    //! Create a non-owning vector that references the specified data
+	//! Create a non-owning vector that references the specified data
 	DUCKDB_API Vector(LogicalType type, data_ptr_t dataptr);
-    //! Create a non-owning vector that references the specified data with ValidityMask
-    DUCKDB_API explicit Vector(LogicalType type_p, data_ptr_t dataptr, validity_t * validity_mask);
+	//! Create a non-owning vector that references the specified data with ValidityMask
+	DUCKDB_API explicit Vector(LogicalType type_p, data_ptr_t dataptr, validity_t * validity_mask);
 	//! Create an owning vector that holds at most STANDARD_VECTOR_SIZE entries.
 	/*!
 	    Create a new vector

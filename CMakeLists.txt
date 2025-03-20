@@ -1,10 +1,8 @@
-
 cmake_minimum_required(VERSION 3.5...3.29)
 
 if(NOT CLANG_TIDY)
   find_package(Python3)
 endif()
-
 
 if(POLICY CMP0026)
   cmake_policy(SET CMP0026 NEW)
@@ -368,7 +366,6 @@ option(EXTENSION_STATIC_BUILD
 if(WIN32 OR ZOS)
   set(EXTENSION_STATIC_BUILD TRUE)
 endif()
-
 
 option(BUILD_EXTENSIONS_ONLY "Build all extension as linkable, overriding DONT_LINK, and don't build core." FALSE)
 option(BUILD_CORE_FUNCTIONS_EXTENSION "Build the core functions." TRUE)
@@ -1229,7 +1226,6 @@ endif()
 foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
   string(TOUPPER ${EXT_NAME} EXT_NAME_UPPERCASE)
 
-
   if (NOT DEFINED DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_BUILD)
     set(DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_SHOULD_BUILD TRUE)
   endif()
@@ -1250,7 +1246,6 @@ foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
 
   if (DEFINED DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_PATH)
     add_subdirectory(${DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_PATH} extension/${EXT_NAME})
-
   else()
     message(FATAL_ERROR "No path found for registered extension '${EXT_NAME}'")
   endif()

@@ -1,0 +1,24 @@
+# name: benchmark/tpch/parquet/parquet_q${QUERY_NUMBER_PADDED}.benchmark
+# description: Execute Q${QUERY_NUMBER_PADDED} over lineitem stored in a parquet file
+# group: [parquet]
+
+name Q${QUERY_NUMBER_PADDED} (parquet)
+group parquet
+subgroup tpch
+
+require parquet
+require tpch
+
+load
+CREATE VIEW region AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/region/*.parquet"]);
+CREATE VIEW nation AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/nation/*.parquet"]);
+CREATE VIEW part AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/part/*.parquet"]);
+CREATE VIEW supplier AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/supplier/*.parquet"]);
+CREATE VIEW partsupp AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/partsupp/*.parquet","/data/9a3-02/tpch-1/parquet_ssd/partsupp/*.parquet","/data/9a3-03/tpch-1/parquet_ssd/partsupp/*.parquet"]);
+CREATE VIEW customer AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/customer/*.parquet"]);
+CREATE VIEW orders AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/orders/*.parquet","/data/9a3-02/tpch-1/parquet_ssd/orders/*.parquet","/data/9a3-03/tpch-1/parquet_ssd/orders/*.parquet"]);
+CREATE VIEW lineitem AS SELECT * FROM parquet_scan(["/data/9a3-01/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-02/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-03/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-04/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-05/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-06/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-07/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-08/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-09/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-10/tpch-1/parquet_ssd/lineitem/*.parquet","/data/9a3-11/tpch-1/parquet_ssd/lineitem/*.parquet"]);
+
+
+run extension/tpch/dbgen/queries/q${QUERY_NUMBER_PADDED}.sql
+result extension/tpch/dbgen/answers/sf${SF_NUMBER}/q${QUERY_NUMBER_PADDED}.csv

@@ -6,10 +6,14 @@
 
 using namespace duckdb;
 
-// Function to check if a file exists (C++11-compatible)
-bool fileExists(const std::string& filename) {
-    struct stat buffer;
-    return (stat(filename.c_str(), &buffer) == 0);
+int main() {
+	DuckDB db(nullptr);
+	Connection con(db);
+	std::string demo = ConfigFactory::Instance().getPixelsSourceDirectory() + "cpp/tests/data/example.pxl";
+//    std::string demo = ConfigFactory::Instance().getPixelsSourceDirectory() + "cpp/cppout/1734406571.pxl";
+	auto result = con.Query("SELECT * from '" + demo + "';");
+	result->Print();
+
 }
 
 int main() {

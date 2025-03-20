@@ -6,6 +6,7 @@ include_directories(../../third_party/catch)
 include_directories(../../third_party/tpce-tool/include)
 include_directories(../../third_party/sqlite/include)
 include_directories(../../src/include)
+
 include_directories($ENV{PIXELS_SRC}/cpp/pixels-common/include)
 include_directories($ENV{PIXELS_SRC}/pixels-common/include)
 

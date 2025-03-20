@@ -22,6 +22,7 @@
 #include <numeric>
 #include <string>
 #include <vector>
+#include <thread>
 #ifndef DUCKDB_AMALGAMATION
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
@@ -48,6 +49,8 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/table/row_group.hpp"
+#include "utils/ConfigFactory.h"
+#include "physical/StorageArrayScheduler.h"
 #endif
 
 namespace duckdb {
@@ -89,6 +92,7 @@ struct ParquetReadLocalState : public LocalTableFunctionState {
 	shared_ptr<ParquetReader> reader;
 	ParquetReaderScanState scan_state;
 	bool is_parallel;
+	int device_id;
 	idx_t batch_index;
 	idx_t file_index;
 	//! The DataChunk containing all read columns (even columns that are immediately removed)
@@ -148,19 +152,25 @@ struct ParquetReadGlobalState : public GlobalTableFunctionState {
 	unique_ptr<MultiFileReaderGlobalState> multi_file_reader_state;
 
 	mutex lock;
+	std::shared_ptr<StorageArrayScheduler> storageArrayScheduler;
+
 
 	//! The current set of parquet readers
-	vector<unique_ptr<ParquetFileReaderData>> readers;
+	vector<vector<std::shared_ptr<ParquetFileReaderData>>> readers;
+	//	vector<unique_ptr<ParquetFileReaderData>> readers;
 
 	//! Signal to other threads that a file failed to open, letting every thread abort.
 	bool error_opening_file = false;
 
 	//! Index of file currently up for scanning
-	atomic<idx_t> file_index;
+	vector<idx_t> file_index;
 	//! Index of row group within file currently up for scanning
-	idx_t row_group_index;
+	vector<idx_t> row_group_index;
 	//! Batch index of the next row group to be scanned
 	idx_t batch_index;
+
+	//! Index of file currently up for scanning
+	atomic<idx_t> cur_file_index;
 
 	idx_t max_threads;
 	vector<idx_t> projection_ids;
@@ -636,15 +646,16 @@ public:
 		auto &gstate = global_state->Cast<ParquetReadGlobalState>();
 
 		auto total_count = gstate.file_list.GetTotalFileCount();
+//		std::cout<<"total_count: "<<gstate.file_list.GetTotalFileCount()<<" cur_file_index"<<gstate.cur_file_index<<std::endl;
 		if (total_count == 0) {
 			return 100.0;
 		}
 		if (bind_data.initial_file_cardinality == 0) {
-			return (100.0 * (static_cast<double>(gstate.file_index) + 1.0)) / static_cast<double>(total_count);
+			return (100.0 * (static_cast<double>(gstate.cur_file_index) + 1.0)) / static_cast<double>(total_count);
 		}
 		auto percentage = MinValue<double>(100.0, (static_cast<double>(bind_data.chunk_count) * STANDARD_VECTOR_SIZE *
 		                                           100.0 / static_cast<double>(bind_data.initial_file_cardinality)));
-		return (percentage + 100.0 * static_cast<double>(gstate.file_index)) / static_cast<double>(total_count);
+		return (percentage + 100.0 * static_cast<double>(gstate.cur_file_index)) / static_cast<double>(total_count);
 	}
 
 	static unique_ptr<LocalTableFunctionState>
@@ -655,6 +666,7 @@ public:
 		auto result = make_uniq<ParquetReadLocalState>();
 		result->is_parallel = true;
 		result->batch_index = 0;
+		result->device_id=gstate.storageArrayScheduler->acquireDeviceId();
 
 		if (gstate.CanRemoveColumns()) {
 			result->all_columns.Initialize(context.client, gstate.scanned_types);
@@ -682,6 +694,13 @@ public:
 		auto &bind_data = input.bind_data->CastNoConst<ParquetReadBindData>();
 		unique_ptr<ParquetReadGlobalState> result;
 
+		int max_threads = std::stoi(ConfigFactory::Instance().getProperty("parquet.threads"));
+		if (max_threads <= 0) {
+			max_threads = ParquetScanMaxThreads(context, input.bind_data.get());
+		}
+		//	result->max_threads = ParquetScanMaxThreads(context, input.bind_data.get());
+
+
 		// before instantiating a scan trigger a dynamic filter pushdown if possible
 		auto new_list = ParquetDynamicFilterPushdown(context, bind_data, input.column_ids, input.filters);
 		if (new_list) {
@@ -690,59 +709,67 @@ public:
 			result = make_uniq<ParquetReadGlobalState>(*bind_data.file_list);
 		}
 		auto &file_list = result->file_list;
+		std::cout<<file_list.GetPaths().size()<<std::endl;
 		file_list.InitializeScan(result->file_list_scan);
-
+		result->max_threads = max_threads;
+		std::vector<std::string> files(bind_data.file_list->GetPaths());
+		result->storageArrayScheduler=std::make_shared<StorageArrayScheduler>(files,max_threads);
+		result->readers.resize(result->storageArrayScheduler->getDeviceSum());
 		result->multi_file_reader_state = bind_data.multi_file_reader->InitializeGlobalState(
 		    context, bind_data.parquet_options.file_options, bind_data.reader_bind, file_list, bind_data.types,
 		    bind_data.names, input.column_ids);
 		if (file_list.IsEmpty()) {
 			result->readers = {};
 		} else if (!bind_data.union_readers.empty()) {
-			// TODO: confirm we are not changing behaviour by modifying the order here?
-			for (auto &reader : bind_data.union_readers) {
-				if (!reader) {
-					break;
-				}
-				result->readers.push_back(make_uniq<ParquetFileReaderData>(std::move(reader)));
-			}
-			if (result->readers.size() != file_list.GetTotalFileCount()) {
-				// This case happens with recursive CTEs: the first execution the readers have already
-				// been moved out of the bind data.
-				// FIXME: clean up this process and make it more explicit
-				result->readers = {};
-			}
+			// unhandled
+//			// TODO: confirm we are not changing behaviour by modifying the order here?
+//			for (auto &reader : bind_data.union_readers) {
+//				if (!reader) {
+//					break;
+//				}
+//				result->readers.push_back(make_uniq<ParquetFileReaderData>(std::move(reader)));
+//			}
+//			if (result->readers.size() != file_list.GetTotalFileCount()) {
+//				// This case happens with recursive CTEs: the first execution the readers have already
+//				// been moved out of the bind data.
+//				// FIXME: clean up this process and make it more explicit
+//				result->readers = {};
+//			}
 		} else if (bind_data.initial_reader) {
 			// we can only use the initial reader if it was constructed from the first file
 			if (bind_data.initial_reader->file_name == file_list.GetFirstFile()) {
-				result->readers.push_back(make_uniq<ParquetFileReaderData>(std::move(bind_data.initial_reader)));
+				result->readers[0].push_back(make_uniq<ParquetFileReaderData>(std::move(bind_data.initial_reader)));
 			}
 		}
 
 		// Ensure all readers are initialized and FileListScan is sync with readers list
-		for (auto &reader_data : result->readers) {
-			string file_name;
-			idx_t file_idx = result->file_list_scan.current_file_idx;
-			file_list.Scan(result->file_list_scan, file_name);
-			if (reader_data->union_data) {
-				if (file_name != reader_data->union_data->GetFileName()) {
-					throw InternalException("Mismatch in filename order and union reader order in parquet scan");
+		for (auto reader_list_pre_disk:result->readers) {
+			for (auto &reader_data : reader_list_pre_disk) {
+				string file_name;
+				idx_t file_idx = result->file_list_scan.current_file_idx;
+				file_list.Scan(result->file_list_scan, file_name);
+				if (reader_data->union_data) {
+					if (file_name != reader_data->union_data->GetFileName()) {
+						throw InternalException("Mismatch in filename order and union reader order in parquet scan");
+					}
+				} else {
+					D_ASSERT(reader_data->reader);
+					if (file_name != reader_data->reader->file_name) {
+						throw InternalException("Mismatch in filename order and reader order in parquet scan");
+					}
+					InitializeParquetReader(*reader_data->reader, bind_data, input.column_ids, input.filters, context,
+					                        file_idx, result->multi_file_reader_state);
 				}
-			} else {
-				D_ASSERT(reader_data->reader);
-				if (file_name != reader_data->reader->file_name) {
-					throw InternalException("Mismatch in filename order and reader order in parquet scan");
-				}
-				InitializeParquetReader(*reader_data->reader, bind_data, input.column_ids, input.filters, context,
-				                        file_idx, result->multi_file_reader_state);
 			}
 		}
 
 		result->column_ids = input.column_ids;
 		result->filters = input.filters.get();
-		result->row_group_index = 0;
-		result->file_index = 0;
+		result->row_group_index.resize(result->storageArrayScheduler->getDeviceSum());
+		result->file_index.resize(result->storageArrayScheduler->getDeviceSum());
 		result->batch_index = 0;
-		result->max_threads = ParquetScanMaxThreads(context, input.bind_data.get());
+		result->cur_file_index=0;
+		std::cout<<"parquet max_threads:"<<max_threads<<std::endl;
 
 		bool require_extra_columns =
 		    result->multi_file_reader_state && result->multi_file_reader_state->RequiresExtraColumns();
@@ -842,6 +869,7 @@ public:
 				return;
 			}
 			if (!ParquetParallelStateNext(context, bind_data, data, gstate)) {
+//				std::cout<<"scan meet false , end and return"<<std::endl;
 				return;
 			}
 		} while (true);
@@ -870,14 +898,14 @@ public:
 
 	// Queries the metadataprovider for another file to scan, updating the files/reader lists in the process.
 	// Returns true if resized
-	static bool ResizeFiles(ParquetReadGlobalState &parallel_state) {
+	static bool ResizeFiles(ParquetReadGlobalState &parallel_state,ParquetReadLocalState &scan_data) {
 		string scanned_file;
 		if (!parallel_state.file_list.Scan(parallel_state.file_list_scan, scanned_file)) {
 			return false;
 		}
 
 		// Push the file in the reader data, to be opened later
-		parallel_state.readers.push_back(make_uniq<ParquetFileReaderData>(scanned_file));
+		parallel_state.readers[scan_data.device_id].push_back(make_uniq<ParquetFileReaderData>(scanned_file));
 
 		return true;
 	}
@@ -887,26 +915,32 @@ public:
 	static bool ParquetParallelStateNext(ClientContext &context, const ParquetReadBindData &bind_data,
 	                                     ParquetReadLocalState &scan_data, ParquetReadGlobalState &parallel_state) {
 		unique_lock<mutex> parallel_lock(parallel_state.lock);
-
+		int device_id=scan_data.device_id;
+		std::thread::id thread_id=std::this_thread::get_id();
 		while (true) {
+//			std::cout << "Thread ID: " << thread_id << ", Device ID: " << device_id <<
+//			", File Index: " << parallel_state.file_index[device_id]<<" row group index"<< parallel_state.file_index[device_id]<< std::endl;
 			if (parallel_state.error_opening_file) {
 				return false;
 			}
 
-			if (parallel_state.file_index >= parallel_state.readers.size() && !ResizeFiles(parallel_state)) {
+//			std::cout<<"parallel_state.file_index[device_id] "<<parallel_state.file_index[device_id]<<std::endl<<" parallel_state";
+			if (parallel_state.file_index[device_id] >= parallel_state.readers[device_id].size() && !ResizeFiles(parallel_state,scan_data)) {
 				return false;
 			}
 
-			auto &current_reader_data = *parallel_state.readers[parallel_state.file_index];
+			auto &current_reader_data = *parallel_state.readers[device_id][parallel_state.file_index[device_id]];
 			if (current_reader_data.file_state == ParquetFileState::OPEN) {
-				if (parallel_state.row_group_index < current_reader_data.reader->NumRowGroups()) {
+//				std::cout<<  "Thread ID: " << thread_id << "current_reader_data:filename "<<
+//				current_reader_data.reader->file_name<<"numRowGroups:"<<current_reader_data.reader->NumRowGroups()<<std::endl;
+				if (parallel_state.row_group_index[device_id] < current_reader_data.reader->NumRowGroups()) {
 					// The current reader has rowgroups left to be scanned
 					scan_data.reader = current_reader_data.reader;
 					vector<idx_t> group_indexes {parallel_state.row_group_index};
 					scan_data.reader->InitializeScan(context, scan_data.scan_state, group_indexes);
 					scan_data.batch_index = parallel_state.batch_index++;
-					scan_data.file_index = parallel_state.file_index;
-					parallel_state.row_group_index++;
+					scan_data.file_index = parallel_state.file_index[device_id];
+					parallel_state.row_group_index[device_id]++;
 					return true;
 				} else {
 					// Close current file
@@ -914,9 +948,14 @@ public:
 					current_reader_data.reader = nullptr;
 
 					// Set state to the next file
-					parallel_state.file_index++;
-					parallel_state.row_group_index = 0;
-
+					parallel_state.file_index[device_id]++;
+					parallel_state.cur_file_index++;
+					parallel_state.row_group_index[device_id] = 0;
+					if(parallel_state.file_index[device_id]>=parallel_state.storageArrayScheduler->getFileSum(device_id)){
+//						std::cout<<"parallel_state.file_index[device_id]: "<<parallel_state.file_index[device_id]
+//						<<" parallel_state.storageArrayScheduler->getFileSum(device_id))"<<parallel_state.storageArrayScheduler->getFileSum(device_id);
+						return false;
+					}
 					continue;
 				}
 			}
@@ -927,7 +966,7 @@ public:
 
 			// Check if the current file is being opened, in that case we need to wait for it.
 			if (current_reader_data.file_state == ParquetFileState::OPENING) {
-				WaitForFile(parallel_state.file_index, parallel_state, parallel_lock);
+				WaitForFile(parallel_state.file_index[device_id], parallel_state, parallel_lock,scan_data);
 			}
 		}
 	}
@@ -948,10 +987,11 @@ public:
 
 	//! Wait for a file to become available. Parallel lock should be locked when calling.
 	static void WaitForFile(idx_t file_index, ParquetReadGlobalState &parallel_state,
-	                        unique_lock<mutex> &parallel_lock) {
+	                        unique_lock<mutex> &parallel_lock,ParquetReadLocalState &scan_data) {
 		while (true) {
+			int device_id=scan_data.device_id;
 			// Get pointer to file mutex before unlocking
-			auto &file_mutex = *parallel_state.readers[file_index]->file_mutex;
+			auto &file_mutex = *parallel_state.readers[device_id][file_index]->file_mutex;
 
 			// To get the file lock, we first need to release the parallel_lock to prevent deadlocking. Note that this
 			// requires getting the ref to the file mutex pointer with the lock stil held: readers get be resized
@@ -963,8 +1003,8 @@ public:
 			// - the thread opening the file is done and the file is available
 			// - the thread opening the file has failed
 			// - the file was somehow scanned till the end while we were waiting
-			if (parallel_state.file_index >= parallel_state.readers.size() ||
-			    parallel_state.readers[parallel_state.file_index]->file_state != ParquetFileState::OPENING ||
+			if (parallel_state.file_index[device_id] >= parallel_state.readers[device_id].size() ||
+			    parallel_state.readers[device_id][parallel_state.file_index[device_id]]->file_state != ParquetFileState::OPENING ||
 			    parallel_state.error_opening_file) {
 				return;
 			}
@@ -975,16 +1015,18 @@ public:
 	static bool TryOpenNextFile(ClientContext &context, const ParquetReadBindData &bind_data,
 	                            ParquetReadLocalState &scan_data, ParquetReadGlobalState &parallel_state,
 	                            unique_lock<mutex> &parallel_lock) {
+		int device_id=scan_data.device_id;
 		const auto file_index_limit =
-		    parallel_state.file_index + TaskScheduler::GetScheduler(context).NumberOfThreads();
+//		    parallel_state.file_index[device_id] + TaskScheduler::GetScheduler(context).NumberOfThreads();
+		    parallel_state.storageArrayScheduler->getFileSum(scan_data.device_id);
 
-		for (idx_t i = parallel_state.file_index; i < file_index_limit; i++) {
+		for (idx_t i = parallel_state.file_index[device_id]; i < file_index_limit; i++) {
 			// We check if we can resize files in this loop too otherwise we will only ever open 1 file ahead
-			if (i >= parallel_state.readers.size() && !ResizeFiles(parallel_state)) {
+			if (i >= parallel_state.readers[device_id].size() && !ResizeFiles(parallel_state,scan_data)) {
 				return false;
 			}
 
-			auto &current_reader_data = *parallel_state.readers[i];
+			auto &current_reader_data = *parallel_state.readers[device_id][i];
 			if (current_reader_data.file_state == ParquetFileState::UNOPENED) {
 				current_reader_data.file_state = ParquetFileState::OPENING;
 				auto pq_options = bind_data.parquet_options;
@@ -1020,6 +1062,11 @@ public:
 				current_reader_data.reader = std::move(reader);
 				current_reader_data.file_state = ParquetFileState::OPEN;
 
+				//vector<vector<shared_ptr<ParquetFileReaderData>>> readers;
+				parallel_state.readers[scan_data.device_id][i]=std::make_shared<ParquetFileReaderData>
+				(
+					std::move(current_reader_data)
+				);
 				return true;
 			}
 		}

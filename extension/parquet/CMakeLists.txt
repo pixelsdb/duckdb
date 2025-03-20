@@ -12,7 +12,8 @@ include_directories(
   ../../third_party/zstd/include
   ../../third_party/mbedtls
   ../../third_party/mbedtls/include
-  ../../third_party/brotli/include)
+  ../../third_party/brotli/include
+  ../../../../pixels-common/include)
 
 
 set(PARQUET_EXTENSION_FILES

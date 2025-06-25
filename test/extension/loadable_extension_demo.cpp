@@ -1,4 +1,3 @@
-#define DUCKDB_EXTENSION_MAIN
 #include "duckdb.hpp"
 #include "duckdb/parser/parser_extension.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
@@ -8,10 +7,11 @@
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 #include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/common/extension_type_info.hpp"
 
 using namespace duckdb;
 
@@ -253,31 +253,46 @@ inline void LoadedExtensionsFunction(DataChunk &args, ExpressionState &state, Ve
 //===--------------------------------------------------------------------===//
 
 struct BoundedType {
+	static LogicalType Bind(const BindLogicalTypeInput &input) {
+		auto &modifiers = input.modifiers;
+
+		if (modifiers.size() != 1) {
+			throw BinderException("BOUNDED type must have one modifier");
+		}
+		if (modifiers[0].type() != LogicalType::INTEGER) {
+			throw BinderException("BOUNDED type modifier must be integer");
+		}
+		if (modifiers[0].IsNull()) {
+			throw BinderException("BOUNDED type modifier cannot be NULL");
+		}
+		auto bound_val = modifiers[0].GetValue<int32_t>();
+		return Get(bound_val);
+	}
+
 	static LogicalType Get(int32_t max_val) {
 		auto type = LogicalType(LogicalTypeId::INTEGER);
 		type.SetAlias("BOUNDED");
-		type.SetModifiers({Value::INTEGER(max_val)});
+		auto info = make_uniq<ExtensionTypeInfo>();
+		info->modifiers.emplace_back(Value::INTEGER(max_val));
+		type.SetExtensionInfo(std::move(info));
 		return type;
 	}
 
 	static LogicalType GetDefault() {
 		auto type = LogicalType(LogicalTypeId::INTEGER);
 		type.SetAlias("BOUNDED");
-		// By default we set a NULL max value to indicate that it can be any value
-		type.SetModifiers({Value(LogicalType::INTEGER)});
 		return type;
 	}
 
 	static int32_t GetMaxValue(const LogicalType &type) {
-		auto mods_ptr = type.GetModifiers();
-		if (!mods_ptr) {
+		if (!type.HasExtensionInfo()) {
 			throw InvalidInputException("BOUNDED type must have a max value");
 		}
-		auto &mods = *mods_ptr;
-		if (mods[0].IsNull()) {
+		auto &mods = type.GetExtensionInfo()->modifiers;
+		if (mods[0].value.IsNull()) {
 			throw InvalidInputException("BOUNDED type must have a max value");
 		}
-		return mods[0].GetValue<int32_t>();
+		return mods[0].value.GetValue<int32_t>();
 	}
 };
 
@@ -411,7 +426,7 @@ static bool IntToBoundedCast(Vector &source, Vector &result, idx_t count, CastPa
 // to verify that the range is valid
 
 struct MinMaxType {
-	static LogicalType Bind(BindTypeModifiersInput &input) {
+	static LogicalType Bind(const BindLogicalTypeInput &input) {
 		auto &modifiers = input.modifiers;
 
 		if (modifiers.size() != 2) {
@@ -424,34 +439,41 @@ struct MinMaxType {
 			throw BinderException("MINMAX type modifiers cannot be NULL");
 		}
 
-		auto min_val = modifiers[0].GetValue<int32_t>();
-		auto max_val = modifiers[1].GetValue<int32_t>();
+		const auto min_val = modifiers[0].GetValue<int32_t>();
+		const auto max_val = modifiers[1].GetValue<int32_t>();
+
 		if (min_val >= max_val) {
 			throw BinderException("MINMAX type min value must be less than max value");
 		}
 
 		auto type = LogicalType(LogicalTypeId::INTEGER);
 		type.SetAlias("MINMAX");
-		type.SetModifiers({Value::INTEGER(min_val), Value::INTEGER(max_val)});
+		auto info = make_uniq<ExtensionTypeInfo>();
+		info->modifiers.emplace_back(Value::INTEGER(min_val));
+		info->modifiers.emplace_back(Value::INTEGER(max_val));
+		type.SetExtensionInfo(std::move(info));
 		return type;
 	}
 
 	static int32_t GetMinValue(const LogicalType &type) {
-		D_ASSERT(type.HasModifiers());
-		auto &mods = *type.GetModifiers();
-		return mods[0].GetValue<int32_t>();
+		D_ASSERT(type.HasExtensionInfo());
+		auto &mods = type.GetExtensionInfo()->modifiers;
+		return mods[0].value.GetValue<int32_t>();
 	}
 
 	static int32_t GetMaxValue(const LogicalType &type) {
-		D_ASSERT(type.HasModifiers());
-		auto &mods = *type.GetModifiers();
-		return mods[1].GetValue<int32_t>();
+		D_ASSERT(type.HasExtensionInfo());
+		auto &mods = type.GetExtensionInfo()->modifiers;
+		return mods[1].value.GetValue<int32_t>();
 	}
 
 	static LogicalType Get(int32_t min_val, int32_t max_val) {
 		auto type = LogicalType(LogicalTypeId::INTEGER);
 		type.SetAlias("MINMAX");
-		type.SetModifiers({Value::INTEGER(min_val), Value::INTEGER(max_val)});
+		auto info = make_uniq<ExtensionTypeInfo>();
+		info->modifiers.emplace_back(Value::INTEGER(min_val));
+		info->modifiers.emplace_back(Value::INTEGER(max_val));
+		type.SetExtensionInfo(std::move(info));
 		return type;
 	}
 
@@ -487,10 +509,11 @@ static void MinMaxRangeFunc(DataChunk &args, ExpressionState &state, Vector &res
 // Extension load + setup
 //===--------------------------------------------------------------------===//
 extern "C" {
-DUCKDB_EXTENSION_API void loadable_extension_demo_init(duckdb::DatabaseInstance &db) {
+DUCKDB_CPP_EXTENSION_ENTRY(loadable_extension_demo, loader) {
 	CreateScalarFunctionInfo hello_alias_info(
 	    ScalarFunction("test_alias_hello", {}, LogicalType::VARCHAR, TestAliasHello));
 
+	auto &db = loader.GetDatabaseInstance();
 	// create a scalar function
 	Connection con(db);
 	auto &client_context = *con.context;
@@ -549,48 +572,42 @@ DUCKDB_EXTENSION_API void loadable_extension_demo_init(duckdb::DatabaseInstance 
 
 	// Bounded type
 	auto bounded_type = BoundedType::GetDefault();
-	ExtensionUtil::RegisterType(db, "BOUNDED", bounded_type);
+	loader.RegisterType("BOUNDED", bounded_type, BoundedType::Bind);
 
 	// Example of function inspecting the type property
 	ScalarFunction bounded_max("bounded_max", {bounded_type}, LogicalType::INTEGER, BoundedMaxFunc, BoundedMaxBind);
-	ExtensionUtil::RegisterFunction(db, bounded_max);
+	loader.RegisterFunction(bounded_max);
 
 	// Example of function inspecting the type property and returning the same type
 	ScalarFunction bounded_invert("bounded_invert", {bounded_type}, bounded_type, BoundedInvertFunc, BoundedInvertBind);
 	// bounded_invert.serialize = BoundedReturnSerialize;
 	// bounded_invert.deserialize = BoundedReturnDeserialize;
-	ExtensionUtil::RegisterFunction(db, bounded_invert);
+	loader.RegisterFunction(bounded_invert);
 
 	// Example of function inspecting the type property of both arguments and returning a new type
 	ScalarFunction bounded_add("bounded_add", {bounded_type, bounded_type}, bounded_type, BoundedAddFunc,
 	                           BoundedAddBind);
-	ExtensionUtil::RegisterFunction(db, bounded_add);
+	loader.RegisterFunction(bounded_add);
 
 	// Example of function that is generic over the type property (the bound is not important)
 	ScalarFunction bounded_even("bounded_even", {bounded_type}, LogicalType::BOOLEAN, BoundedEvenFunc);
-	ExtensionUtil::RegisterFunction(db, bounded_even);
+	loader.RegisterFunction(bounded_even);
 
 	// Example of function that is specialized over type property
 	auto bounded_specialized_type = BoundedType::Get(0xFF);
 	ScalarFunction bounded_to_ascii("bounded_ascii", {bounded_specialized_type}, LogicalType::VARCHAR,
 	                                BoundedToAsciiFunc);
-	ExtensionUtil::RegisterFunction(db, bounded_to_ascii);
+	loader.RegisterFunction(bounded_to_ascii);
 
 	// Enable explicit casting to our specialized type
-	ExtensionUtil::RegisterCastFunction(db, bounded_type, bounded_specialized_type, BoundCastInfo(BoundedToBoundedCast),
-	                                    0);
+	loader.RegisterCastFunction(bounded_type, bounded_specialized_type, BoundCastInfo(BoundedToBoundedCast), 0);
 	// Casts
-	ExtensionUtil::RegisterCastFunction(db, LogicalType::INTEGER, bounded_type, BoundCastInfo(IntToBoundedCast), 0);
+	loader.RegisterCastFunction(LogicalType::INTEGER, bounded_type, BoundCastInfo(IntToBoundedCast), 0);
 
 	// MinMax Type
 	auto minmax_type = MinMaxType::GetDefault();
-	ExtensionUtil::RegisterType(db, "MINMAX", minmax_type, MinMaxType::Bind);
-	ExtensionUtil::RegisterCastFunction(db, LogicalType::INTEGER, minmax_type, BoundCastInfo(IntToMinMaxCast), 0);
-	ExtensionUtil::RegisterFunction(
-	    db, ScalarFunction("minmax_range", {minmax_type}, LogicalType::INTEGER, MinMaxRangeFunc));
-}
-
-DUCKDB_EXTENSION_API const char *loadable_extension_demo_version() {
-	return DuckDB::LibraryVersion();
+	loader.RegisterType("MINMAX", minmax_type, MinMaxType::Bind);
+	loader.RegisterCastFunction(LogicalType::INTEGER, minmax_type, BoundCastInfo(IntToMinMaxCast), 0);
+	loader.RegisterFunction(ScalarFunction("minmax_range", {minmax_type}, LogicalType::INTEGER, MinMaxRangeFunc));
 }
 }

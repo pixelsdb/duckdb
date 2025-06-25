@@ -29,25 +29,27 @@ struct ValidityMask;
 class Vector;
 
 struct TryCast {
+	static ConversionException UnimplementedErrorMessage(PhysicalType source, PhysicalType target,
+	                                                     optional_ptr<CastParameters> parameters);
+	static string UnimplementedCastMessage(const LogicalType &source, const LogicalType &target);
+
 	template <class SRC, class DST>
 	static inline bool Operation(SRC input, DST &result, bool strict = false) {
-		throw NotImplementedException("Unimplemented type for cast (%s -> %s)", GetTypeId<SRC>(), GetTypeId<DST>());
+		throw UnimplementedErrorMessage(GetTypeId<SRC>(), GetTypeId<DST>(), nullptr);
 	}
 };
 
 struct TryCastErrorMessage {
 	template <class SRC, class DST>
 	static inline bool Operation(SRC input, DST &result, CastParameters &parameters) {
-		throw NotImplementedException(parameters.query_location, "Unimplemented type for cast (%s -> %s)",
-		                              GetTypeId<SRC>(), GetTypeId<DST>());
+		throw TryCast::UnimplementedErrorMessage(GetTypeId<SRC>(), GetTypeId<DST>(), parameters);
 	}
 };
 
 struct TryCastErrorMessageCommaSeparated {
 	template <class SRC, class DST>
 	static inline bool Operation(SRC input, DST &result, CastParameters &parameters) {
-		throw NotImplementedException(parameters.query_location, "Unimplemented type for cast (%s -> %s)",
-		                              GetTypeId<SRC>(), GetTypeId<DST>());
+		throw TryCast::UnimplementedErrorMessage(GetTypeId<SRC>(), GetTypeId<DST>(), parameters);
 	}
 };
 
@@ -80,14 +82,8 @@ struct Cast {
 struct HandleCastError {
 	static void AssignError(const string &error_message, CastParameters &parameters);
 	static void AssignError(const string &error_message, string *error_message_ptr,
-	                        optional_idx error_location = optional_idx()) {
-		if (!error_message_ptr) {
-			throw ConversionException(error_location, error_message);
-		}
-		if (error_message_ptr->empty()) {
-			*error_message_ptr = error_message;
-		}
-	}
+	                        optional_ptr<const Expression> cast_source = nullptr,
+	                        optional_idx error_location = optional_idx());
 };
 
 //===--------------------------------------------------------------------===//
@@ -614,6 +610,22 @@ template <>
 DUCKDB_API bool TryCast::Operation(timestamp_t input, dtime_tz_t &result, bool strict);
 template <>
 DUCKDB_API bool TryCast::Operation(timestamp_t input, timestamp_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_sec_t input, timestamp_sec_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_t input, timestamp_sec_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_ms_t input, timestamp_ms_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_t input, timestamp_ms_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_ns_t input, timestamp_ns_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_t input, timestamp_ns_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_tz_t input, timestamp_tz_t &result, bool strict);
+template <>
+DUCKDB_API bool TryCast::Operation(timestamp_t input, timestamp_tz_t &result, bool strict);
 
 //===--------------------------------------------------------------------===//
 // Interval Casts

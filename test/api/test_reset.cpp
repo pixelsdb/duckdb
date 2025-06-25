@@ -43,7 +43,7 @@ struct OptionValueSet {
 void RequireValueEqual(ConfigurationOption *op, const Value &left, const Value &right, int line);
 #define REQUIRE_VALUE_EQUAL(op, lhs, rhs) RequireValueEqual(op, lhs, rhs, __LINE__)
 
-OptionValueSet GetValueForOption(const string &name, LogicalTypeId type) {
+OptionValueSet GetValueForOption(const string &name, const LogicalType &type) {
 	static unordered_map<string, OptionValueSet> value_map = {
 	    {"threads", {Value::BIGINT(42), Value::BIGINT(42)}},
 	    {"checkpoint_threshold", {"4.0 GiB"}},
@@ -51,6 +51,7 @@ OptionValueSet GetValueForOption(const string &name, LogicalTypeId type) {
 	    {"default_collation", {"nocase"}},
 	    {"default_order", {"desc"}},
 	    {"default_null_order", {"nulls_first"}},
+	    {"disabled_compression_methods", {"RLE"}},
 	    {"disabled_optimizers", {"extension"}},
 	    {"debug_force_external", {Value(true)}},
 	    {"old_implicit_casting", {Value(true)}},
@@ -60,6 +61,8 @@ OptionValueSet GetValueForOption(const string &name, LogicalTypeId type) {
 	    {"default_secret_storage", {"custom_storage"}},
 	    {"custom_extension_repository", {"duckdb.org/no-extensions-here", "duckdb.org/no-extensions-here"}},
 	    {"autoinstall_extension_repository", {"duckdb.org/no-extensions-here", "duckdb.org/no-extensions-here"}},
+	    {"lambda_syntax", {EnumUtil::ToString(LambdaSyntax::DISABLE_SINGLE_ARROW)}},
+	    {"profiling_coverage", {EnumUtil::ToString(ProfilingCoverage::ALL)}},
 #ifdef DUCKDB_EXTENSION_AUTOLOAD_DEFAULT
 	    {"autoload_known_extensions", {!DUCKDB_EXTENSION_AUTOLOAD_DEFAULT}},
 #else
@@ -86,6 +89,7 @@ OptionValueSet GetValueForOption(const string &name, LogicalTypeId type) {
 	    {"storage_compatibility_version", {"v0.10.0"}},
 	    {"ordered_aggregate_threshold", {Value::UBIGINT(idx_t(1) << 12)}},
 	    {"null_order", {"nulls_first"}},
+	    {"debug_verify_vector", {"dictionary_expression"}},
 	    {"perfect_ht_threshold", {0}},
 	    {"pivot_filter_threshold", {999}},
 	    {"pivot_limit", {999}},
@@ -94,6 +98,13 @@ OptionValueSet GetValueForOption(const string &name, LogicalTypeId type) {
 	    {"preserve_insertion_order", {false}},
 	    {"profile_output", {"test"}},
 	    {"profiling_mode", {"detailed"}},
+	    {"disabled_log_types", {"blabla"}},
+	    {"enabled_log_types", {"blabla"}},
+	    {"enabled_log_types", {"blabla"}},
+	    {"enable_logging", {true}},
+	    {"logging_mode", {"ENABLE_SELECTED"}},
+	    {"logging_level", {"FATAL"}},
+	    {"logging_storage", {"stdout"}},
 	    {"enable_progress_bar_print", {false}},
 	    {"scalar_subquery_error_on_multiple_rows", {false}},
 	    {"ieee_floating_point_ops", {false}},
@@ -101,15 +112,18 @@ OptionValueSet GetValueForOption(const string &name, LogicalTypeId type) {
 	    {"temp_directory", {"tmp"}},
 	    {"wal_autocheckpoint", {"4.0 GiB"}},
 	    {"force_bitpacking_mode", {"constant"}},
+	    {"enable_http_logging", {false}},
 	    {"http_proxy", {"localhost:80"}},
 	    {"http_proxy_username", {"john"}},
 	    {"http_proxy_password", {"doe"}},
 	    {"http_logging_output", {"my_cool_outputfile"}},
 	    {"allocator_flush_threshold", {"4.0 GiB"}},
-	    {"allocator_bulk_deallocation_flush_threshold", {"4.0 GiB"}}};
+	    {"allocator_bulk_deallocation_flush_threshold", {"4.0 GiB"}},
+	    {"arrow_output_version", {"1.5"}},
+	    {"enable_external_file_cache", {false}}};
 	// Every option that's not excluded has to be part of this map
 	if (!value_map.count(name)) {
-		switch (type) {
+		switch (type.id()) {
 		case LogicalTypeId::BOOLEAN:
 			return OptionValueSet(Value::BOOLEAN(true));
 		case LogicalTypeId::TINYINT:
@@ -132,16 +146,20 @@ OptionValueSet GetValueForOption(const string &name, LogicalTypeId type) {
 bool OptionIsExcludedFromTest(const string &name) {
 	static unordered_set<string> excluded_options = {
 	    "access_mode",
+	    "allowed_directories",
+	    "allowed_paths",
 	    "schema",
 	    "search_path",
 	    "debug_window_mode",
 	    "experimental_parallel_csv",
-	    "lock_configuration",         // cant change this while db is running
-	    "disabled_filesystems",       // cant change this while db is running
-	    "enable_external_access",     // cant change this while db is running
-	    "allow_unsigned_extensions",  // cant change this while db is running
-	    "allow_community_extensions", // cant change this while db is running
-	    "allow_unredacted_secrets",   // cant change this while db is running
+	    "lock_configuration",            // cant change this while db is running
+	    "disabled_filesystems",          // cant change this while db is running
+	    "enable_external_access",        // cant change this while db is running
+	    "allow_unsigned_extensions",     // cant change this while db is running
+	    "allow_community_extensions",    // cant change this while db is running
+	    "allow_unredacted_secrets",      // cant change this while db is running
+	    "disable_database_invalidation", // cant change this while db is running
+	    "enable_object_cache",
 	    "streaming_buffer_size",
 	    "log_query_path",
 	    "password",
@@ -155,6 +173,7 @@ bool OptionIsExcludedFromTest(const string &name) {
 	    "custom_user_agent",
 	    "default_block_size",
 	    "index_scan_percentage",
+	    "scheduler_process_partial",
 	    "index_scan_max_count"};
 	return excluded_options.count(name) == 1;
 }
@@ -197,8 +216,9 @@ TEST_CASE("Test RESET statement for ClientConfig options", "[api]") {
 
 		// Get the current value of the option
 		auto original_value = op->get_setting(*con.context);
+		auto parameter_type = DBConfig::ParseLogicalType(option.parameter_type);
 
-		auto value_set = GetValueForOption(option.name, option.parameter_type);
+		auto value_set = GetValueForOption(option.name, parameter_type);
 		// verify that at least one value is different
 		bool any_different = false;
 		string options;
@@ -221,7 +241,7 @@ TEST_CASE("Test RESET statement for ClientConfig options", "[api]") {
 		}
 		for (auto &value_pair : value_set.pairs) {
 			// Get the new value for the option
-			auto input = value_pair.input.DefaultCastAs(op->parameter_type);
+			auto input = value_pair.input.DefaultCastAs(parameter_type);
 			// Set the new option
 			if (op->set_local) {
 				op->set_local(*con.context, input);

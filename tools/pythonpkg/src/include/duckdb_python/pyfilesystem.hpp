@@ -32,7 +32,7 @@ public:
 
 class PythonFileHandle : public FileHandle {
 public:
-	PythonFileHandle(FileSystem &file_system, const string &path, const py::object &handle);
+	PythonFileHandle(FileSystem &file_system, const string &path, const py::object &handle, FileOpenFlags flags);
 	~PythonFileHandle() override;
 	void Close() override;
 
@@ -73,7 +73,7 @@ public:
 	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 
 	bool FileExists(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
-	vector<string> Glob(const string &path, FileOpener *opener) override;
+	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener) override;
 	bool CanHandleFile(const string &fpath) override;
 	bool CanSeek() override {
 		return true;

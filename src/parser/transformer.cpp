@@ -234,13 +234,12 @@ unique_ptr<QueryNode> Transformer::TransformMaterializedCTE(unique_ptr<QueryNode
 
 	for (auto &cte : root->cte_map.map) {
 		auto &cte_entry = cte.second;
-		if (cte_entry->materialized == CTEMaterialize::CTE_MATERIALIZE_ALWAYS) {
-			auto mat_cte = make_uniq<CTENode>();
-			mat_cte->ctename = cte.first;
-			mat_cte->query = cte_entry->query->node->Copy();
-			mat_cte->aliases = cte_entry->aliases;
-			materialized_ctes.push_back(std::move(mat_cte));
-		}
+		auto mat_cte = make_uniq<CTENode>();
+		mat_cte->ctename = cte.first;
+		mat_cte->query = TransformMaterializedCTE(cte_entry->query->node->Copy());
+		mat_cte->aliases = cte_entry->aliases;
+		mat_cte->materialized = cte_entry->materialized;
+		materialized_ctes.push_back(std::move(mat_cte));
 	}
 
 	while (!materialized_ctes.empty()) {
@@ -259,14 +258,14 @@ void Transformer::SetQueryLocation(ParsedExpression &expr, int query_location) {
 	if (query_location < 0) {
 		return;
 	}
-	expr.query_location = optional_idx(idx_t(query_location));
+	expr.SetQueryLocation(optional_idx(static_cast<idx_t>(query_location)));
 }
 
 void Transformer::SetQueryLocation(TableRef &ref, int query_location) {
 	if (query_location < 0) {
 		return;
 	}
-	ref.query_location = optional_idx(idx_t(query_location));
+	ref.query_location = optional_idx(static_cast<idx_t>(query_location));
 }
 
 } // namespace duckdb

@@ -10,6 +10,7 @@
 #include "sqllogic_parser.hpp"
 #include "test_helpers.hpp"
 #include "sqllogic_test_logger.hpp"
+#include "duckdb/common/random_engine.hpp"
 
 #ifdef DUCKDB_OUT_OF_TREE
 #include DUCKDB_EXTENSION_HEADER
@@ -20,11 +21,14 @@ namespace duckdb {
 SQLLogicTestRunner::SQLLogicTestRunner(string dbpath) : dbpath(std::move(dbpath)), finished_processing_file(false) {
 	config = GetTestConfig();
 	config->options.allow_unredacted_secrets = true;
+	config->options.load_extensions = false;
 
 	auto env_var = std::getenv("LOCAL_EXTENSION_REPO");
 	if (!env_var) {
-		config->options.load_extensions = false;
 		config->options.autoload_known_extensions = false;
+	} else {
+		local_extension_repo = env_var;
+		config->options.autoload_known_extensions = true;
 	}
 }
 
@@ -46,7 +50,8 @@ SQLLogicTestRunner::~SQLLogicTestRunner() {
 
 void SQLLogicTestRunner::ExecuteCommand(duckdb::unique_ptr<Command> command) {
 	if (InLoop()) {
-		active_loops.back()->loop_commands.push_back(std::move(command));
+		auto &current_loop = *active_loops.back();
+		current_loop.loop_commands.push_back(std::move(command));
 	} else {
 		ExecuteContext context;
 		command->Execute(context);
@@ -57,7 +62,8 @@ void SQLLogicTestRunner::StartLoop(LoopDefinition definition) {
 	auto loop = make_uniq<LoopCommand>(*this, std::move(definition));
 	auto loop_ptr = loop.get();
 	if (InLoop()) {
-		active_loops.back()->loop_commands.push_back(std::move(loop));
+		auto &current_loop = *active_loops.back();
+		current_loop.loop_commands.push_back(std::move(loop));
 	} else {
 		// not in a loop yet: new top-level loop
 		top_level_loop = std::move(loop);
@@ -90,9 +96,11 @@ void SQLLogicTestRunner::LoadDatabase(string dbpath, bool load_extensions) {
 
 	try {
 		db = make_uniq<DuckDB>(dbpath, config.get());
+		// always load core functions
+		ExtensionHelper::LoadExtension(*db, "core_functions");
 	} catch (std::exception &ex) {
 		ErrorData err(ex);
-		SQLLogicTestLogger::LoadDatabaseFail(dbpath, err.Message());
+		SQLLogicTestLogger::LoadDatabaseFail(file_name, dbpath, err.Message());
 		FAIL();
 	}
 	Reconnect();
@@ -121,14 +129,23 @@ void SQLLogicTestRunner::Reconnect() {
 		con->EnableQueryVerification();
 	}
 	// Set the local extension repo for autoinstalling extensions
-	auto env_var = std::getenv("LOCAL_EXTENSION_REPO");
-	if (env_var) {
-		config->options.autoload_known_extensions = true;
-		auto res1 = con->Query("SET autoinstall_extension_repository='" + string(env_var) + "'");
+	if (!local_extension_repo.empty()) {
+		auto res1 = con->Query("SET autoinstall_extension_repository='" + local_extension_repo + "'");
+	}
+
+	auto &test_config = TestConfiguration::Get();
+	auto init_cmd = test_config.OnConnectCommand();
+	if (!init_cmd.empty()) {
+		test_config.ProcessPath(init_cmd, file_name);
+		auto res = con->Query(ReplaceKeywords(init_cmd));
+		if (res->HasError()) {
+			FAIL("Startup queries provided via on_init failed: " + res->GetError());
+		}
 	}
 }
 
 string SQLLogicTestRunner::ReplaceLoopIterator(string text, string loop_iterator_name, string replacement) {
+	replacement = ReplaceKeywords(replacement);
 	if (StringUtil::Contains(loop_iterator_name, ",")) {
 		auto name_splits = StringUtil::Split(loop_iterator_name, ",");
 		auto replacement_splits = StringUtil::Split(replacement, ",");
@@ -230,6 +247,7 @@ bool SQLLogicTestRunner::ForEachTokenReplace(const string &parameter, vector<str
 		result.push_back("bitpacking");
 		result.push_back("dictionary");
 		result.push_back("fsst");
+		result.push_back("dict_fsst");
 		result.push_back("alp");
 		result.push_back("alprd");
 		collection = true;
@@ -293,6 +311,28 @@ bool SQLLogicTestRunner::ForEachTokenReplace(const string &parameter, vector<str
 	return collection;
 }
 
+static string ParseExplanation(SQLLogicParser &parser, const vector<string> &params, size_t &index) {
+	string res;
+	if (params[index].empty() || params[index][0] != '"') {
+		parser.Fail("Quoted parameter should start with double quotes");
+	}
+
+	res += params[index].substr(1);
+	index++;
+
+	while (index < params.size()) {
+		res += " " + params[index];
+		index++;
+
+		if (res.back() == '"') {
+			res.pop_back();
+			break;
+		}
+	}
+
+	return res;
+}
+
 RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vector<string> &params) {
 	if (params.size() < 1) {
 		parser.Fail("require requires a single parameter");
@@ -300,6 +340,14 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 	// require command
 	string param = StringUtil::Lower(params[0]);
 	// os specific stuff
+
+	if (param == "notmusl") {
+#ifdef __MUSL_ENABLED__
+		return RequireResult::MISSING;
+#else
+		return RequireResult::PRESENT;
+#endif
+	}
 	if (param == "notmingw") {
 #ifdef __MINGW32__
 		return RequireResult::MISSING;
@@ -348,7 +396,7 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 	}
 
 	if (param == "noforcestorage") {
-		if (TestForceStorage()) {
+		if (TestConfiguration::TestForceStorage()) {
 			return RequireResult::MISSING;
 		}
 		return RequireResult::PRESENT;
@@ -368,6 +416,38 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 #else
 		return RequireResult::PRESENT;
 #endif
+	}
+
+	if (param == "ram") {
+		if (params.size() != 2) {
+			parser.Fail("require ram requires a parameter");
+		}
+		// require a minimum amount of ram
+		auto required_limit = DBConfig::ParseMemoryLimit(params[1]);
+		auto limit = FileSystem::GetAvailableMemory();
+		if (!limit.IsValid()) {
+			return RequireResult::MISSING;
+		}
+		if (limit.GetIndex() < required_limit) {
+			return RequireResult::MISSING;
+		}
+		return RequireResult::PRESENT;
+	}
+
+	if (param == "disk_space") {
+		if (params.size() != 2) {
+			parser.Fail("require disk_space requires a parameter");
+		}
+		// require a minimum amount of disk space
+		auto required_limit = DBConfig::ParseMemoryLimit(params[1]);
+		auto available_space = FileSystem::GetAvailableDiskSpace(".");
+		if (!available_space.IsValid()) {
+			return RequireResult::MISSING;
+		}
+		if (available_space.GetIndex() < required_limit) {
+			return RequireResult::MISSING;
+		}
+		return RequireResult::PRESENT;
 	}
 
 	if (param == "vector_size") {
@@ -422,6 +502,17 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 #endif
 	}
 
+	if (param == "no_latest_storage") {
+#ifdef DUCKDB_LATEST_STORAGE
+		return RequireResult::MISSING;
+#elif defined(DUCKDB_ALTERNATIVE_VERIFY)
+		//! ALTERNATIVE_VERIFY also forces latest storage
+		return RequireResult::MISSING;
+#else
+		return RequireResult::PRESENT;
+#endif
+	}
+
 	if (param == "no_block_verification") {
 #ifdef DUCKDB_BLOCK_VERIFICATION
 		return RequireResult::MISSING;
@@ -431,19 +522,35 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 	}
 
 	if (param == "no_vector_verification") {
-#ifdef DUCKDB_VERIFY_VECTOR
-		return RequireResult::MISSING;
-#else
+		auto &test_config = TestConfiguration::Get();
+		if (test_config.GetVectorVerification() != DebugVectorVerification::NONE) {
+			return RequireResult::MISSING;
+		}
 		return RequireResult::PRESENT;
-#endif
 	}
-
 	if (param == "no_extension_autoloading") {
+		if (params.size() < 2) {
+			parser.Fail("require no_extension_autoloading needs an explanation string");
+		}
+		size_t index = 1;
+		string explanation = ParseExplanation(parser, params, index);
+		if (explanation.rfind("EXPECTED", 0) == 0 || explanation.rfind("FIXME", 0) == 0) {
+			// good, explanation is properly formatted
+		} else {
+			parser.Fail(
+			    "require no_extension_autoloading explanation string should begin with either 'EXPECTED' or FIXME'");
+		}
 		if (config->options.autoload_known_extensions) {
 			// If autoloading is on, we skip this test
 			return RequireResult::MISSING;
 		}
 		return RequireResult::PRESENT;
+	}
+	if (param == "allow_unsigned_extensions") {
+		if (config->options.allow_unsigned_extensions) {
+			return RequireResult::PRESENT;
+		}
+		return RequireResult::MISSING;
 	}
 
 	bool excluded_from_autoloading = true;
@@ -527,6 +634,7 @@ bool TryParseConditions(SQLLogicParser &parser, const string &condition_text, ve
 }
 
 void SQLLogicTestRunner::ExecuteFile(string script) {
+	file_name = script;
 	SQLLogicParser parser;
 	idx_t skip_level = 0;
 
@@ -771,8 +879,34 @@ void SQLLogicTestRunner::ExecuteFile(string script) {
 					string_set->insert(current_string);
 					string_set->erase("");
 				}
+			} else if (token.parameters[0] == "seed") {
+				if (token.parameters.size() != 2) {
+					parser.Fail("set seed requires a single seed value");
+				}
+				Value seed(token.parameters[1]);
+				if (!seed.DefaultTryCastAs(LogicalType::DOUBLE)) {
+					parser.Fail("set seed requires a floating point parameter");
+				}
+				auto res = con->Query("SELECT SETSEED(" + seed.ToString() + ")");
+				if (res->HasError()) {
+					parser.Fail("Failed to set seed: %s", res->GetError());
+				}
+				skip_reload = true;
 			} else {
 				parser.Fail("unrecognized set parameter: %s", token.parameters[0]);
+			}
+		} else if (token.type == SQLLogicTokenType::SQLLOGIC_RESET) {
+			if (token.parameters.size() != 2) {
+				parser.Fail("Expected reset [type] [name] (e.g reset label my_label)");
+			}
+			auto &reset_type = token.parameters[0];
+			auto &reset_item = token.parameters[1];
+			if (StringUtil::CIEquals("label", reset_type)) {
+				auto reset_label_command = make_uniq<ResetLabel>(*this);
+				reset_label_command->query_label = reset_item;
+				ExecuteCommand(std::move(reset_label_command));
+			} else {
+				parser.Fail("unrecognized reset parameter: %s", reset_type);
 			}
 		} else if (token.type == SQLLogicTokenType::SQLLOGIC_LOOP ||
 		           token.type == SQLLogicTokenType::SQLLOGIC_CONCURRENT_LOOP) {
@@ -855,14 +989,33 @@ void SQLLogicTestRunner::ExecuteFile(string script) {
 			environment_variables[env_var] = env_actual;
 
 		} else if (token.type == SQLLogicTokenType::SQLLOGIC_LOAD) {
-			bool readonly = token.parameters.size() > 1 && token.parameters[1] == "readonly";
+			bool is_read_only = false;
+			if (token.parameters.size() > 1) {
+				auto param = token.parameters[1];
+				if (StringUtil::CIEquals("readonly", param)) {
+					is_read_only = true;
+				} else if (StringUtil::CIEquals("readwrite", param)) {
+					is_read_only = false;
+				} else {
+					parser.Fail(StringUtil::Format(
+					    "parameter to 'load' is invalid, received '%s', accepted options are 'readonly' and 'readwrite",
+					    param));
+				}
+			}
+
+			string version;
+			if (token.parameters.size() > 2) {
+				version = token.parameters[2];
+			}
+
 			string load_db_path;
 			if (!token.parameters.empty()) {
 				load_db_path = ReplaceKeywords(token.parameters[0]);
 			} else {
 				load_db_path = string();
 			}
-			auto command = make_uniq<LoadCommand>(*this, load_db_path, readonly);
+
+			auto command = make_uniq<LoadCommand>(*this, load_db_path, is_read_only, version);
 			ExecuteCommand(std::move(command));
 		} else if (token.type == SQLLogicTokenType::SQLLOGIC_RESTART) {
 			bool load_extensions = !(token.parameters.size() == 1 && token.parameters[0] == "no_extension_load");

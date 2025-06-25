@@ -235,8 +235,10 @@ private:
 	unique_ptr<ParsedExpression> TransformFuncCall(duckdb_libpgquery::PGFuncCall &root);
 	//! Transform a Postgres boolean expression into an Expression
 	unique_ptr<ParsedExpression> TransformInterval(duckdb_libpgquery::PGIntervalConstant &root);
-	//! Transform a Postgres lambda node [e.g. (x, y) -> x + y] into a lambda expression
+	//! Transform a LAMBDA node (e.g., lambda x, y: x + y) into a lambda expression.
 	unique_ptr<ParsedExpression> TransformLambda(duckdb_libpgquery::PGLambdaFunction &node);
+	//! Transform a single arrow operator (e.g., (x, y) -> x + y) into a lambda expression.
+	unique_ptr<ParsedExpression> TransformSingleArrow(duckdb_libpgquery::PGSingleArrowFunction &node);
 	//! Transform a Postgres array access node (e.g. x[1] or x[1:3])
 	unique_ptr<ParsedExpression> TransformArrayAccess(duckdb_libpgquery::PGAIndirection &node);
 	//! Transform a positional reference (e.g. #1)
@@ -261,8 +263,8 @@ private:
 	//===--------------------------------------------------------------------===//
 	// Constraints transform
 	//===--------------------------------------------------------------------===//
-	unique_ptr<Constraint> TransformConstraint(duckdb_libpgquery::PGListCell &cell);
-	unique_ptr<Constraint> TransformConstraint(duckdb_libpgquery::PGListCell &cell, ColumnDefinition &column,
+	unique_ptr<Constraint> TransformConstraint(duckdb_libpgquery::PGConstraint &constraint);
+	unique_ptr<Constraint> TransformConstraint(duckdb_libpgquery::PGConstraint &constraint, ColumnDefinition &column,
 	                                           idx_t index);
 
 	//===--------------------------------------------------------------------===//
@@ -323,6 +325,8 @@ private:
 	//! Transform a range var into a (schema) qualified name
 	QualifiedName TransformQualifiedName(duckdb_libpgquery::PGRangeVar &root);
 
+	//! Transform a Postgres TypeName string into a LogicalType (non-LIST types)
+	LogicalType TransformTypeNameInternal(duckdb_libpgquery::PGTypeName &name);
 	//! Transform a Postgres TypeName string into a LogicalType
 	LogicalType TransformTypeName(duckdb_libpgquery::PGTypeName &name);
 
@@ -365,6 +369,7 @@ private:
 
 	void ParseGenericOptionListEntry(case_insensitive_map_t<vector<Value>> &result_options, string &name,
 	                                 duckdb_libpgquery::PGNode *arg);
+	vector<string> TransformNameList(duckdb_libpgquery::PGList &list);
 
 public:
 	static void SetQueryLocation(ParsedExpression &expr, int query_location);

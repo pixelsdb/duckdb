@@ -75,7 +75,7 @@ static vector<LogicalType> CreateGroupChunkTypes(vector<unique_ptr<Expression>> 
 	}
 
 	for (auto &group : groups) {
-		D_ASSERT(group->type == ExpressionType::BOUND_REF);
+		D_ASSERT(group->GetExpressionType() == ExpressionType::BOUND_REF);
 		auto &bound_ref = group->Cast<BoundReferenceExpression>();
 		group_indices.insert(bound_ref.index);
 	}
@@ -103,25 +103,27 @@ bool PhysicalHashAggregate::CanSkipRegularSink() const {
 	return true;
 }
 
-PhysicalHashAggregate::PhysicalHashAggregate(ClientContext &context, vector<LogicalType> types,
-                                             vector<unique_ptr<Expression>> expressions, idx_t estimated_cardinality)
-    : PhysicalHashAggregate(context, std::move(types), std::move(expressions), {}, estimated_cardinality) {
-}
-
-PhysicalHashAggregate::PhysicalHashAggregate(ClientContext &context, vector<LogicalType> types,
-                                             vector<unique_ptr<Expression>> expressions,
-                                             vector<unique_ptr<Expression>> groups_p, idx_t estimated_cardinality)
-    : PhysicalHashAggregate(context, std::move(types), std::move(expressions), std::move(groups_p), {}, {},
+PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, ClientContext &context,
+                                             vector<LogicalType> types, vector<unique_ptr<Expression>> expressions,
+                                             idx_t estimated_cardinality)
+    : PhysicalHashAggregate(physical_plan, context, std::move(types), std::move(expressions), {},
                             estimated_cardinality) {
 }
 
-PhysicalHashAggregate::PhysicalHashAggregate(ClientContext &context, vector<LogicalType> types,
-                                             vector<unique_ptr<Expression>> expressions,
+PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, ClientContext &context,
+                                             vector<LogicalType> types, vector<unique_ptr<Expression>> expressions,
+                                             vector<unique_ptr<Expression>> groups_p, idx_t estimated_cardinality)
+    : PhysicalHashAggregate(physical_plan, context, std::move(types), std::move(expressions), std::move(groups_p), {},
+                            {}, estimated_cardinality) {
+}
+
+PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, ClientContext &context,
+                                             vector<LogicalType> types, vector<unique_ptr<Expression>> expressions,
                                              vector<unique_ptr<Expression>> groups_p,
                                              vector<GroupingSet> grouping_sets_p,
                                              vector<unsafe_vector<idx_t>> grouping_functions_p,
                                              idx_t estimated_cardinality)
-    : PhysicalOperator(PhysicalOperatorType::HASH_GROUP_BY, std::move(types), estimated_cardinality),
+    : PhysicalOperator(physical_plan, PhysicalOperatorType::HASH_GROUP_BY, std::move(types), estimated_cardinality),
       grouping_sets(std::move(grouping_sets_p)) {
 	// get a list of all aggregates to be computed
 	const idx_t group_count = groups_p.size();
@@ -319,15 +321,17 @@ void PhysicalHashAggregate::SinkDistinctGrouping(ExecutionContext &context, Data
 			for (idx_t group_idx = 0; group_idx < grouped_aggregate_data.groups.size(); group_idx++) {
 				auto &group = grouped_aggregate_data.groups[group_idx];
 				auto &bound_ref = group->Cast<BoundReferenceExpression>();
-				filtered_input.data[bound_ref.index].Reference(chunk.data[bound_ref.index]);
+				auto &col = filtered_input.data[bound_ref.index];
+				col.Reference(chunk.data[bound_ref.index]);
+				col.Slice(sel_vec, count);
 			}
 			for (idx_t child_idx = 0; child_idx < aggregate.children.size(); child_idx++) {
 				auto &child = aggregate.children[child_idx];
 				auto &bound_ref = child->Cast<BoundReferenceExpression>();
-
-				filtered_input.data[bound_ref.index].Reference(chunk.data[bound_ref.index]);
+				auto &col = filtered_input.data[bound_ref.index];
+				col.Reference(chunk.data[bound_ref.index]);
+				col.Slice(sel_vec, count);
 			}
-			filtered_input.Slice(sel_vec, count);
 			filtered_input.SetCardinality(count);
 
 			radix_table.Sink(context, filtered_input, sink_input, empty_chunk, empty_filter);
@@ -364,7 +368,7 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 	for (auto &aggregate : aggregates) {
 		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
 		for (auto &child_expr : aggr.children) {
-			D_ASSERT(child_expr->type == ExpressionType::BOUND_REF);
+			D_ASSERT(child_expr->GetExpressionType() == ExpressionType::BOUND_REF);
 			auto &bound_ref_expr = child_expr->Cast<BoundReferenceExpression>();
 			D_ASSERT(bound_ref_expr.index < chunk.data.size());
 			aggregate_input_chunk.data[aggregate_input_idx++].Reference(chunk.data[bound_ref_expr.index]);
@@ -486,6 +490,10 @@ public:
 public:
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override;
 
+	string TaskType() const override {
+		return "HashAggregateFinalizeTask";
+	}
+
 private:
 	ClientContext &context;
 	Pipeline &pipeline;
@@ -544,6 +552,10 @@ public:
 
 public:
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override;
+
+	string TaskType() const override {
+		return "HashAggregateDistinctFinalizeTask";
+	}
 
 private:
 	TaskExecutionResult AggregateDistinctGrouping(const idx_t grouping_idx);
@@ -883,15 +895,15 @@ SourceResultType PhysicalHashAggregate::GetData(ExecutionContext &context, DataC
 	return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
 }
 
-double PhysicalHashAggregate::GetProgress(ClientContext &context, GlobalSourceState &gstate_p) const {
+ProgressData PhysicalHashAggregate::GetProgress(ClientContext &context, GlobalSourceState &gstate_p) const {
 	auto &sink_gstate = sink_state->Cast<HashAggregateGlobalSinkState>();
 	auto &gstate = gstate_p.Cast<HashAggregateGlobalSourceState>();
-	double total_progress = 0;
+	ProgressData progress;
 	for (idx_t radix_idx = 0; radix_idx < groupings.size(); radix_idx++) {
-		total_progress += groupings[radix_idx].table_data.GetProgress(
-		    context, *sink_gstate.grouping_states[radix_idx].table_state, *gstate.radix_states[radix_idx]);
+		progress.Add(groupings[radix_idx].table_data.GetProgress(
+		    context, *sink_gstate.grouping_states[radix_idx].table_state, *gstate.radix_states[radix_idx]));
 	}
-	return total_progress / double(groupings.size());
+	return progress;
 }
 
 InsertionOrderPreservingMap<string> PhysicalHashAggregate::ParamsToString() const {

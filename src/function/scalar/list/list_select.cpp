@@ -4,6 +4,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/function/scalar/list_functions.hpp"
 
 namespace duckdb {
 
@@ -138,7 +139,7 @@ static void ListSelectFunction(DataChunk &args, ExpressionState &state, Vector &
 		}
 		result_data[j].length = offset - result_data[j].offset;
 	}
-	result_entry.Slice(input_entry, result_selection_vec, count);
+	result_entry.Slice(input_entry, result_selection_vec, offset);
 	result_entry.Flatten(offset);
 	ListVector::SetListSize(result, offset);
 	FlatVector::SetValidity(result_entry, entry_validity_mask);
@@ -179,8 +180,4 @@ ScalarFunction ListSelectFun::GetFunction() {
 	return fun;
 }
 
-void ListSelectFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction({"list_select", "array_select"}, ListSelectFun::GetFunction());
-	set.AddFunction({"list_where", "array_where"}, ListWhereFun::GetFunction());
-}
 } // namespace duckdb

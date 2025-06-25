@@ -10,6 +10,7 @@
 
 #include "duckdb/common/types/row/tuple_data_layout.hpp"
 #include "duckdb/execution/operator/aggregate/grouped_aggregate_data.hpp"
+#include "duckdb/execution/progress_data.hpp"
 #include "duckdb/parser/group_by_node.hpp"
 
 namespace duckdb {
@@ -50,8 +51,9 @@ public:
 	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, GlobalSinkState &sink,
 	                         OperatorSourceInput &input) const;
 
-	double GetProgress(ClientContext &context, GlobalSinkState &sink_p, GlobalSourceState &gstate) const;
+	ProgressData GetProgress(ClientContext &context, GlobalSinkState &sink_p, GlobalSourceState &gstate) const;
 
+	shared_ptr<TupleDataLayout> GetLayoutPtr() const;
 	const TupleDataLayout &GetLayout() const;
 	idx_t MaxThreads(GlobalSinkState &sink) const;
 	static void SetMultiScan(GlobalSinkState &sink);
@@ -60,7 +62,7 @@ private:
 	void SetGroupingValues();
 	void PopulateGroupChunk(DataChunk &group_chunk, DataChunk &input_chunk) const;
 
-	TupleDataLayout layout;
+	shared_ptr<TupleDataLayout> layout_ptr;
 };
 
 } // namespace duckdb

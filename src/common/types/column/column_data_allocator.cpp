@@ -1,5 +1,6 @@
 #include "duckdb/common/types/column/column_data_allocator.hpp"
 
+#include "duckdb/common/radix_partitioning.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_pool.hpp"
@@ -53,12 +54,7 @@ ColumnDataAllocator::~ColumnDataAllocator() {
 	for (auto &block : blocks) {
 		block.handle->SetDestroyBufferUpon(DestroyBufferUpon::UNPIN);
 	}
-	const auto data_size = SizeInBytes();
 	blocks.clear();
-	if (Allocator::SupportsFlush() &&
-	    data_size > alloc.buffer_manager->GetBufferPool().GetAllocatorBulkDeallocationFlushThreshold()) {
-		Allocator::FlushAll();
-	}
 }
 
 BufferHandle ColumnDataAllocator::Pin(uint32_t block_id) {
@@ -84,6 +80,9 @@ BufferHandle ColumnDataAllocator::AllocateBlock(idx_t size) {
 	auto pin = alloc.buffer_manager->Allocate(MemoryTag::COLUMN_DATA, max_size, false);
 	data.handle = pin.GetBlockHandle();
 	blocks.push_back(std::move(data));
+	if (partition_index.IsValid()) { // Set the eviction queue index logarithmically using RadixBits
+		blocks.back().handle->SetEvictionQueueIndex(RadixPartitioning::RadixBits(partition_index.GetIndex()));
+	}
 	allocated_size += max_size;
 	return pin;
 }
@@ -196,44 +195,42 @@ data_ptr_t ColumnDataAllocator::GetDataPointer(ChunkManagementState &state, uint
 	return state.handles[block_id].Ptr() + offset;
 }
 
-void ColumnDataAllocator::UnswizzlePointers(ChunkManagementState &state, Vector &result, idx_t v_offset, uint16_t count,
-                                            uint32_t block_id, uint32_t offset) {
+void ColumnDataAllocator::UnswizzlePointers(ChunkManagementState &state, Vector &result,
+                                            SwizzleMetaData &swizzle_segment, const VectorMetaData &string_heap_segment,
+                                            const idx_t &v_offset, const bool &copied) {
 	D_ASSERT(result.GetType().InternalType() == PhysicalType::VARCHAR);
 	lock_guard<mutex> guard(lock);
-
-	auto &validity = FlatVector::Validity(result);
-	auto strings = FlatVector::GetData<string_t>(result);
-
-	// find first non-inlined string
-	auto i = NumericCast<uint32_t>(v_offset);
-	const uint32_t end = NumericCast<uint32_t>(v_offset + count);
-	for (; i < end; i++) {
-		if (!validity.RowIsValid(i)) {
-			continue;
-		}
-		if (!strings[i].IsInlined()) {
-			break;
-		}
-	}
-	// at least one string must be non-inlined, otherwise this function should not be called
-	D_ASSERT(i < end);
-
-	auto base_ptr = char_ptr_cast(GetDataPointer(state, block_id, offset));
-	if (strings[i].GetData() == base_ptr) {
-		// pointers are still valid
-		return;
+	const auto old_base_ptr = char_ptr_cast(swizzle_segment.ptr);
+	const auto new_base_ptr =
+	    char_ptr_cast(GetDataPointer(state, string_heap_segment.block_id, string_heap_segment.offset));
+	if (old_base_ptr == new_base_ptr) {
+		return; // pointers are still valid
 	}
 
-	// pointer mismatch! pointers are invalid, set them correctly
-	for (; i < end; i++) {
-		if (!validity.RowIsValid(i)) {
+	const auto &validity = FlatVector::Validity(result);
+	const auto strings = FlatVector::GetData<string_t>(result);
+
+	// recompute pointers
+	const auto start = NumericCast<idx_t>(v_offset + swizzle_segment.offset);
+	const auto end = start + NumericCast<idx_t>(swizzle_segment.count);
+	for (idx_t i = start; i < end; i++) {
+		auto &str = strings[i];
+		if (!validity.RowIsValid(i) || str.IsInlined()) {
 			continue;
 		}
-		if (strings[i].IsInlined()) {
-			continue;
+		const auto str_offset = str.GetPointer() - old_base_ptr;
+		D_ASSERT(str_offset >= 0);
+		str.SetPointer(new_base_ptr + str_offset);
+#ifdef D_ASSERT_IS_ENABLED
+		if (result.GetType() == LogicalType::VARCHAR) {
+			str.Verify();
 		}
-		strings[i].SetPointer(base_ptr);
-		base_ptr += strings[i].GetSize();
+#endif
+	}
+
+	if (!copied) {
+		// if the data was not copied, we modified data on the blocks. store the new base ptr
+		swizzle_segment.ptr = data_ptr_cast(new_base_ptr);
 	}
 }
 

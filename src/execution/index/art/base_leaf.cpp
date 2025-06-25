@@ -62,12 +62,6 @@ void Node7Leaf::InsertByte(ART &art, Node &node, const uint8_t byte) {
 		return;
 	}
 
-	// Still space. Insert the child.
-	uint8_t child_pos = 0;
-	while (child_pos < n7.count && n7.key[child_pos] < byte) {
-		child_pos++;
-	}
-
 	InsertByteInternal(n7, byte);
 }
 
@@ -154,7 +148,7 @@ void Node15Leaf::ShrinkNode256Leaf(ART &art, Node &node15_leaf, Node &node256_le
 	auto &n256 = Node::Ref<Node256Leaf>(art, node256_leaf, NType::NODE_256_LEAF);
 	node15_leaf.SetGateStatus(node256_leaf.GetGateStatus());
 
-	ValidityMask mask(&n256.mask[0]);
+	ValidityMask mask(&n256.mask[0], Node256::CAPACITY);
 	for (uint16_t i = 0; i < Node256::CAPACITY; i++) {
 		if (mask.RowIsValid(i)) {
 			n15.key[n15.count] = UnsafeNumericCast<uint8_t>(i);

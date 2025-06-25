@@ -43,6 +43,18 @@ public:
 	optional_ptr<TableCatalogEntry> current_table;
 	MetaBlockPointer checkpoint_id;
 	idx_t wal_version = 1;
+
+	struct ReplayIndexInfo {
+		ReplayIndexInfo(TableIndexList &index_list, unique_ptr<Index> index, const string &table_schema,
+		                const string &table_name)
+		    : index_list(index_list), index(std::move(index)), table_schema(table_schema), table_name(table_name) {};
+
+		reference<TableIndexList> index_list;
+		unique_ptr<Index> index;
+		string table_schema;
+		string table_name;
+	};
+	vector<ReplayIndexInfo> replay_index_infos;
 };
 
 class WriteAheadLogDeserializer {
@@ -50,11 +62,13 @@ public:
 	WriteAheadLogDeserializer(ReplayState &state_p, BufferedFileReader &stream_p, bool deserialize_only = false)
 	    : state(state_p), db(state.db), context(state.context), catalog(state.catalog), data(nullptr),
 	      stream(nullptr, 0), deserializer(stream_p), deserialize_only(deserialize_only) {
+		deserializer.Set<Catalog &>(catalog);
 	}
 	WriteAheadLogDeserializer(ReplayState &state_p, unique_ptr<data_t[]> data_p, idx_t size,
 	                          bool deserialize_only = false)
 	    : state(state_p), db(state.db), context(state.context), catalog(state.catalog), data(std::move(data_p)),
 	      stream(data.get(), size), deserializer(stream), deserialize_only(deserialize_only) {
+		deserializer.Set<Catalog &>(catalog);
 	}
 
 	static WriteAheadLogDeserializer Open(ReplayState &state_p, BufferedFileReader &stream,
@@ -162,13 +176,29 @@ private:
 //===--------------------------------------------------------------------===//
 // Replay
 //===--------------------------------------------------------------------===//
-bool WriteAheadLog::Replay(AttachedDatabase &database, unique_ptr<FileHandle> handle) {
+unique_ptr<WriteAheadLog> WriteAheadLog::Replay(FileSystem &fs, AttachedDatabase &db, const string &wal_path) {
+	auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
+	if (!handle) {
+		// WAL does not exist - instantiate an empty WAL
+		return make_uniq<WriteAheadLog>(db, wal_path);
+	}
+	auto wal_handle = ReplayInternal(db, std::move(handle));
+	if (wal_handle) {
+		return wal_handle;
+	}
+	// replay returning NULL indicates we can nuke the WAL entirely - but only if this is not a read-only connection
+	if (!db.IsReadOnly()) {
+		fs.RemoveFile(wal_path);
+	}
+	return make_uniq<WriteAheadLog>(db, wal_path);
+}
+unique_ptr<WriteAheadLog> WriteAheadLog::ReplayInternal(AttachedDatabase &database, unique_ptr<FileHandle> handle) {
 	Connection con(database.GetDatabase());
 	auto wal_path = handle->GetPath();
 	BufferedFileReader reader(FileSystem::Get(database), std::move(handle));
 	if (reader.Finished()) {
-		// WAL is empty
-		return false;
+		// WAL file exists but it is empty - we can delete the file
+		return nullptr;
 	}
 
 	con.BeginTransaction();
@@ -203,7 +233,7 @@ bool WriteAheadLog::Replay(AttachedDatabase &database, unique_ptr<FileHandle> ha
 		if (manager.IsCheckpointClean(checkpoint_state.checkpoint_id)) {
 			// the contents of the WAL have already been checkpointed
 			// we can safely truncate the WAL and ignore its contents
-			return true;
+			return nullptr;
 		}
 	}
 
@@ -216,15 +246,26 @@ bool WriteAheadLog::Replay(AttachedDatabase &database, unique_ptr<FileHandle> ha
 	// replay the WAL
 	// note that everything is wrapped inside a try/catch block here
 	// there can be errors in WAL replay because of a corrupt WAL file
+	idx_t successful_offset = 0;
+	bool all_succeeded = false;
 	try {
 		while (true) {
 			// read the current entry
 			auto deserializer = WriteAheadLogDeserializer::Open(state, reader);
 			if (deserializer.ReplayEntry()) {
 				con.Commit();
+
+				// Commit any outstanding indexes.
+				for (auto &info : state.replay_index_infos) {
+					info.index_list.get().AddIndex(std::move(info.index));
+				}
+				state.replay_index_infos.clear();
+
+				successful_offset = reader.offset;
 				// check if the file is exhausted
 				if (reader.Finished()) {
 					// we finished reading the file: break
+					all_succeeded = true;
 					break;
 				}
 				con.BeginTransaction();
@@ -246,7 +287,8 @@ bool WriteAheadLog::Replay(AttachedDatabase &database, unique_ptr<FileHandle> ha
 		con.Query("ROLLBACK");
 		throw;
 	} // LCOV_EXCL_STOP
-	return false;
+	auto init_state = all_succeeded ? WALInitState::UNINITIALIZED : WALInitState::UNINITIALIZED_REQUIRES_TRUNCATE;
+	return make_uniq<WriteAheadLog>(database, wal_path, successful_offset, init_state);
 }
 
 //===--------------------------------------------------------------------===//
@@ -367,15 +409,117 @@ void WriteAheadLogDeserializer::ReplayDropTable() {
 		return;
 	}
 
+	// Remove any replay indexes of this table.
+	state.replay_index_infos.erase(std::remove_if(state.replay_index_infos.begin(), state.replay_index_infos.end(),
+	                                              [&info](const ReplayState::ReplayIndexInfo &replay_info) {
+		                                              return replay_info.table_schema == info.schema &&
+		                                                     replay_info.table_name == info.name;
+	                                              }),
+	                               state.replay_index_infos.end());
+
 	catalog.DropEntry(context, info);
+}
+
+void ReplayWithoutIndex(ClientContext &context, Catalog &catalog, AlterInfo &info, const bool only_deserialize) {
+	if (only_deserialize) {
+		return;
+	}
+	catalog.Alter(context, info);
+}
+
+void ReplayIndexData(AttachedDatabase &db, BinaryDeserializer &deserializer, IndexStorageInfo &info,
+                     const bool deserialize_only) {
+	D_ASSERT(info.IsValid() && !info.name.empty());
+
+	auto &storage_manager = db.GetStorageManager();
+	auto &single_file_sm = storage_manager.Cast<SingleFileStorageManager>();
+	auto &block_manager = single_file_sm.block_manager;
+	auto &buffer_manager = block_manager->buffer_manager;
+
+	deserializer.ReadList(103, "index_storage", [&](Deserializer::List &list, idx_t i) {
+		auto &data_info = info.allocator_infos[i];
+
+		// Read the data into buffer handles and convert them to blocks on disk.
+		for (idx_t j = 0; j < data_info.allocation_sizes.size(); j++) {
+
+			// Read the data into a buffer handle.
+			auto buffer_handle = buffer_manager.Allocate(MemoryTag::ART_INDEX, block_manager.get(), false);
+			auto block_handle = buffer_handle.GetBlockHandle();
+			auto data_ptr = buffer_handle.Ptr();
+
+			list.ReadElement<bool>(data_ptr, data_info.allocation_sizes[j]);
+
+			// Convert the buffer handle to a persistent block and store the block id.
+			if (!deserialize_only) {
+				auto block_id = block_manager->GetFreeBlockId();
+				block_manager->ConvertToPersistent(block_id, std::move(block_handle), std::move(buffer_handle));
+				data_info.block_pointers[j].block_id = block_id;
+			}
+		}
+	});
 }
 
 void WriteAheadLogDeserializer::ReplayAlter() {
 	auto info = deserializer.ReadProperty<unique_ptr<ParseInfo>>(101, "info");
 	auto &alter_info = info->Cast<AlterInfo>();
+	if (!alter_info.IsAddPrimaryKey()) {
+		return ReplayWithoutIndex(context, catalog, alter_info, DeserializeOnly());
+	}
+
+	auto index_storage_info = deserializer.ReadProperty<IndexStorageInfo>(102, "index_storage_info");
+	ReplayIndexData(db, deserializer, index_storage_info, DeserializeOnly());
 	if (DeserializeOnly()) {
 		return;
 	}
+
+	auto &table_info = alter_info.Cast<AlterTableInfo>();
+	auto &constraint_info = table_info.Cast<AddConstraintInfo>();
+	auto &unique_info = constraint_info.constraint->Cast<UniqueConstraint>();
+
+	auto &table =
+	    catalog.GetEntry<TableCatalogEntry>(context, table_info.schema, table_info.name).Cast<DuckTableEntry>();
+	auto &column_list = table.GetColumns();
+
+	// Add the table to the bind context to bind the parsed expressions.
+	auto binder = Binder::CreateBinder(context);
+	vector<LogicalType> column_types;
+	vector<string> column_names;
+	for (auto &col : column_list.Logical()) {
+		column_types.push_back(col.Type());
+		column_names.push_back(col.Name());
+	}
+
+	// Create a binder to bind the parsed expressions.
+	vector<ColumnIndex> column_indexes;
+	binder->bind_context.AddBaseTable(0, string(), column_names, column_types, column_indexes, table);
+	IndexBinder idx_binder(*binder, context);
+
+	// Bind the parsed expressions to create unbound expressions.
+	vector<unique_ptr<Expression>> unbound_expressions;
+	auto logical_indexes = unique_info.GetLogicalIndexes(column_list);
+	for (const auto &logical_index : logical_indexes) {
+		auto &col = column_list.GetColumn(logical_index);
+		unique_ptr<ParsedExpression> parsed = make_uniq<ColumnRefExpression>(col.GetName(), table_info.name);
+		unbound_expressions.push_back(idx_binder.Bind(parsed));
+	}
+
+	vector<column_t> column_ids;
+	for (auto &column_index : column_indexes) {
+		column_ids.push_back(column_index.GetPrimaryIndex());
+	}
+
+	auto &storage = table.GetStorage();
+	CreateIndexInput input(TableIOManager::Get(storage), storage.db, IndexConstraintType::PRIMARY,
+	                       index_storage_info.name, column_ids, unbound_expressions, index_storage_info,
+	                       index_storage_info.options);
+
+	auto index_type = context.db->config.GetIndexTypes().FindByName(ART::TYPE_NAME);
+	auto index_instance = index_type->create_instance(input);
+
+	auto &table_index_list = storage.GetDataTableInfo()->GetIndexes();
+	state.replay_index_infos.emplace_back(table_index_list, std::move(index_instance), table_info.schema,
+	                                      table_info.name);
+
 	catalog.Alter(context, alter_info);
 }
 
@@ -539,82 +683,34 @@ void WriteAheadLogDeserializer::ReplayDropTableMacro() {
 void WriteAheadLogDeserializer::ReplayCreateIndex() {
 	auto create_info = deserializer.ReadProperty<unique_ptr<CreateInfo>>(101, "index_catalog_entry");
 	auto index_info = deserializer.ReadProperty<IndexStorageInfo>(102, "index_storage_info");
-	D_ASSERT(index_info.IsValid() && !index_info.name.empty());
 
-	auto &storage_manager = db.GetStorageManager();
-	auto &single_file_sm = storage_manager.Cast<SingleFileStorageManager>();
-	auto &block_manager = single_file_sm.block_manager;
-	auto &buffer_manager = block_manager->buffer_manager;
-
-	deserializer.ReadList(103, "index_storage", [&](Deserializer::List &list, idx_t i) {
-		auto &data_info = index_info.allocator_infos[i];
-
-		// read the data into buffer handles and convert them to blocks on disk
-		// then, update the block pointer
-		for (idx_t j = 0; j < data_info.allocation_sizes.size(); j++) {
-
-			// read the data into a buffer handle
-			auto buffer_handle = buffer_manager.Allocate(MemoryTag::ART_INDEX, block_manager->GetBlockSize(), false);
-			auto block_handle = buffer_handle.GetBlockHandle();
-			auto data_ptr = buffer_handle.Ptr();
-
-			list.ReadElement<bool>(data_ptr, data_info.allocation_sizes[j]);
-
-			// now convert the buffer handle to a persistent block and remember the block id
-			auto block_id = block_manager->GetFreeBlockId();
-			block_manager->ConvertToPersistent(block_id, std::move(block_handle));
-			data_info.block_pointers[j].block_id = block_id;
-		}
-	});
-
+	ReplayIndexData(db, deserializer, index_info, DeserializeOnly());
 	if (DeserializeOnly()) {
 		return;
 	}
 	auto &info = create_info->Cast<CreateIndexInfo>();
 
-	// Ensure the index type exists
+	// Ensure that the index type exists.
 	if (info.index_type.empty()) {
 		info.index_type = ART::TYPE_NAME;
 	}
 
-	auto index_type = context.db->config.GetIndexTypes().FindByName(info.index_type);
-	if (!index_type) {
-		throw InternalException("Index type \"%s\" not recognized", info.index_type);
-	}
+	const auto schema_name = create_info->schema;
+	const auto table_name = info.table;
 
-	// create the index in the catalog
-	auto &table = catalog.GetEntry<TableCatalogEntry>(context, create_info->schema, info.table).Cast<DuckTableEntry>();
-	auto &index = table.schema.CreateIndex(context, info, table)->Cast<DuckIndexEntry>();
+	auto &entry = catalog.GetEntry<TableCatalogEntry>(context, schema_name, table_name);
+	auto &table = entry.Cast<DuckTableEntry>();
+	auto &storage = table.GetStorage();
+	auto &io_manager = TableIOManager::Get(storage);
 
-	// add the table to the bind context to bind the parsed expressions
-	auto binder = Binder::CreateBinder(context);
-	vector<LogicalType> column_types;
-	vector<string> column_names;
-	for (auto &col : table.GetColumns().Logical()) {
-		column_types.push_back(col.Type());
-		column_names.push_back(col.Name());
-	}
+	// Create the index in the catalog.
+	table.schema.CreateIndex(context, info, table);
 
-	// create a binder to bind the parsed expressions
-	vector<column_t> column_ids;
-	binder->bind_context.AddBaseTable(0, info.table, column_names, column_types, column_ids, &table);
-	IndexBinder idx_binder(*binder, context);
+	// add the index to the storage
+	auto unbound_index = make_uniq<UnboundIndex>(std::move(create_info), std::move(index_info), io_manager, db);
 
-	// bind the parsed expressions to create unbound expressions
-	vector<unique_ptr<Expression>> unbound_expressions;
-	unbound_expressions.reserve(index.parsed_expressions.size());
-	for (auto &expr : index.parsed_expressions) {
-		auto copy = expr->Copy();
-		unbound_expressions.push_back(idx_binder.Bind(copy));
-	}
-
-	auto &data_table = table.GetStorage();
-
-	CreateIndexInput input(TableIOManager::Get(data_table), data_table.db, info.constraint_type, info.index_name,
-	                       info.column_ids, unbound_expressions, index_info, info.options);
-
-	auto index_instance = index_type->create_instance(input);
-	data_table.AddIndex(std::move(index_instance));
+	auto &table_index_list = storage.GetDataTableInfo()->GetIndexes();
+	state.replay_index_infos.emplace_back(table_index_list, std::move(unbound_index), schema_name, table_name);
 }
 
 void WriteAheadLogDeserializer::ReplayDropIndex() {
@@ -625,6 +721,14 @@ void WriteAheadLogDeserializer::ReplayDropIndex() {
 	if (DeserializeOnly()) {
 		return;
 	}
+
+	// Remove the replay index, if any.
+	state.replay_index_infos.erase(std::remove_if(state.replay_index_infos.begin(), state.replay_index_infos.end(),
+	                                              [&info](const ReplayState::ReplayIndexInfo &replay_info) {
+		                                              return replay_info.table_schema == info.schema &&
+		                                                     replay_info.index->GetIndexName() == info.name;
+	                                              }),
+	                               state.replay_index_infos.end());
 
 	catalog.DropEntry(context, info);
 }
@@ -651,10 +755,10 @@ void WriteAheadLogDeserializer::ReplayInsert() {
 		throw InternalException("Corrupt WAL: insert without table");
 	}
 
-	// append to the current table
-	// we don't do any constraint verification here
+	// Append to the current table without constraint verification.
 	vector<unique_ptr<BoundConstraint>> bound_constraints;
-	state.current_table->GetStorage().LocalAppend(*state.current_table, context, chunk, bound_constraints);
+	auto &storage = state.current_table->GetStorage();
+	storage.LocalWALAppend(*state.current_table, context, chunk, bound_constraints);
 }
 
 static void MarkBlocksAsUsed(BlockManager &manager, const PersistentColumnData &col_data) {
@@ -678,7 +782,7 @@ void WriteAheadLogDeserializer::ReplayRowGroupData() {
 	auto &block_manager = db.GetStorageManager().GetBlockManager();
 	PersistentCollectionData data;
 	deserializer.Set<DatabaseInstance &>(db.GetDatabase());
-	CompressionInfo compression_info(block_manager.GetBlockSize());
+	CompressionInfo compression_info(block_manager);
 	deserializer.Set<const CompressionInfo &>(compression_info);
 	deserializer.ReadProperty(101, "row_group_data", data);
 	deserializer.Unset<const CompressionInfo>();
@@ -699,7 +803,7 @@ void WriteAheadLogDeserializer::ReplayRowGroupData() {
 	}
 	auto &storage = state.current_table->GetStorage();
 	auto &table_info = storage.GetDataTableInfo();
-	RowGroupCollection new_row_groups(table_info, block_manager, storage.GetTypes(), 0);
+	RowGroupCollection new_row_groups(table_info, table_info->GetIOManager(), storage.GetTypes(), 0);
 	new_row_groups.Initialize(data);
 	TableIndexList index_list;
 	storage.MergeStorage(new_row_groups, index_list, nullptr);
@@ -712,19 +816,24 @@ void WriteAheadLogDeserializer::ReplayDelete() {
 		return;
 	}
 	if (!state.current_table) {
-		throw InternalException("Corrupt WAL: delete without table");
+		throw SerializationException("delete without a table");
 	}
 
 	D_ASSERT(chunk.ColumnCount() == 1 && chunk.data[0].GetType() == LogicalType::ROW_TYPE);
 	row_t row_ids[1];
 	Vector row_identifiers(LogicalType::ROW_TYPE, data_ptr_cast(row_ids));
-
 	auto source_ids = FlatVector::GetData<row_t>(chunk.data[0]);
-	// delete the tuples from the current table
+
+	// Delete the row IDs from the current table.
+	auto &storage = state.current_table->GetStorage();
+	auto total_rows = storage.GetTotalRows();
 	TableDeleteState delete_state;
 	for (idx_t i = 0; i < chunk.size(); i++) {
+		if (source_ids[i] >= UnsafeNumericCast<row_t>(total_rows)) {
+			throw SerializationException("invalid row ID delete in WAL");
+		}
 		row_ids[0] = source_ids[i];
-		state.current_table->GetStorage().Delete(delete_state, context, row_identifiers, 1);
+		storage.Delete(delete_state, context, row_identifiers, 1);
 	}
 }
 

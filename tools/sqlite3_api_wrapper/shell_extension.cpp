@@ -1,5 +1,5 @@
 #include "shell_extension.hpp"
-#include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/main/config.hpp"
 #include <stdio.h>
@@ -27,15 +27,19 @@ unique_ptr<FunctionData> GetEnvBind(ClientContext &context, ScalarFunction &boun
 	return nullptr;
 }
 
-void ShellExtension::Load(DuckDB &db) {
-	ExtensionUtil::RegisterExtension(*db.instance, "shell", {"Adds CLI-specific support and functionalities"});
+void ShellExtension::Load(ExtensionLoader &loader) {
 
-	ExtensionUtil::RegisterFunction(*db.instance, ScalarFunction("getenv", {LogicalType::VARCHAR}, LogicalType::VARCHAR,
-	                                                             GetEnvFunction, GetEnvBind));
+	loader.SetDescription("Adds CLI-specific support and functionalities");
+	loader.RegisterFunction(
+	    ScalarFunction("getenv", {LogicalType::VARCHAR}, LogicalType::VARCHAR, GetEnvFunction, GetEnvBind));
 }
 
 std::string ShellExtension::Name() {
 	return "shell";
+}
+
+std::string ShellExtension::Version() const {
+	return DefaultVersion();
 }
 
 } // namespace duckdb

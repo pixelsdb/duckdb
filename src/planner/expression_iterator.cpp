@@ -22,7 +22,7 @@ void ExpressionIterator::EnumerateChildren(Expression &expr, const std::function
 
 void ExpressionIterator::EnumerateChildren(Expression &expr,
                                            const std::function<void(unique_ptr<Expression> &child)> &callback) {
-	switch (expr.expression_class) {
+	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_AGGREGATE: {
 		auto &aggr_expr = expr.Cast<BoundAggregateExpression>();
 		for (auto &child : aggr_expr.children) {
@@ -88,8 +88,8 @@ void ExpressionIterator::EnumerateChildren(Expression &expr,
 	}
 	case ExpressionClass::BOUND_SUBQUERY: {
 		auto &subquery_expr = expr.Cast<BoundSubqueryExpression>();
-		if (subquery_expr.child) {
-			callback(subquery_expr.child);
+		for (auto &child : subquery_expr.children) {
+			callback(child);
 		}
 		break;
 	}
@@ -119,6 +119,9 @@ void ExpressionIterator::EnumerateChildren(Expression &expr,
 		if (window_expr.default_expr) {
 			callback(window_expr.default_expr);
 		}
+		for (auto &order : window_expr.arg_orders) {
+			callback(order.expression);
+		}
 		break;
 	}
 	case ExpressionClass::BOUND_UNNEST: {
@@ -147,6 +150,27 @@ void ExpressionIterator::EnumerateExpression(unique_ptr<Expression> &expr,
 	callback(*expr);
 	ExpressionIterator::EnumerateChildren(*expr,
 	                                      [&](unique_ptr<Expression> &child) { EnumerateExpression(child, callback); });
+}
+
+void ExpressionIterator::VisitExpressionClass(const Expression &expr, ExpressionClass expr_class,
+                                              const std::function<void(const Expression &child)> &callback) {
+	if (expr.GetExpressionClass() == expr_class) {
+		callback(expr);
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(
+	    expr, [&](const Expression &child) { VisitExpressionClass(child, expr_class, callback); });
+}
+
+void ExpressionIterator::VisitExpressionClassMutable(
+    unique_ptr<Expression> &expr, ExpressionClass expr_class,
+    const std::function<void(unique_ptr<Expression> &child)> &callback) {
+	if (expr->GetExpressionClass() == expr_class) {
+		callback(expr);
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(
+	    *expr, [&](unique_ptr<Expression> &child) { VisitExpressionClassMutable(child, expr_class, callback); });
 }
 
 void BoundNodeVisitor::VisitExpression(unique_ptr<Expression> &expression) {

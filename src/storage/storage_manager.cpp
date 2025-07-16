@@ -2,22 +2,21 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/common/file_system.hpp"
-#include "duckdb/common/serializer/buffered_file_reader.hpp"
-#include "duckdb/function/function.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/main/database_manager.hpp"
 #include "duckdb/storage/checkpoint_manager.hpp"
 #include "duckdb/storage/in_memory_block_manager.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/single_file_block_manager.hpp"
-#include "duckdb/transaction/transaction_manager.hpp"
-#include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/storage/table/column_data.hpp"
+#include "mbedtls_wrapper.hpp"
 
 namespace duckdb {
+
+using SHA256State = duckdb_mbedtls::MbedTlsWrapper::SHA256State;
 
 StorageManager::StorageManager(AttachedDatabase &db, string path_p, bool read_only)
     : db(db), path(std::move(path_p)), read_only(read_only) {
@@ -44,48 +43,23 @@ DatabaseInstance &StorageManager::GetDatabase() {
 	return db.GetDatabase();
 }
 
-BufferManager &BufferManager::GetBufferManager(ClientContext &context) {
-	return BufferManager::GetBufferManager(*context.db);
-}
-
-const BufferManager &BufferManager::GetBufferManager(const ClientContext &context) {
-	return BufferManager::GetBufferManager(*context.db);
-}
-
 ObjectCache &ObjectCache::GetObjectCache(ClientContext &context) {
 	return context.db->GetObjectCache();
 }
 
-bool ObjectCache::ObjectCacheEnabled(ClientContext &context) {
-	return context.db->config.options.object_cache_enable;
-}
-
 idx_t StorageManager::GetWALSize() {
-	auto wal_ptr = GetWAL();
-	if (!wal_ptr) {
-		return 0;
-	}
-	return wal_ptr->GetWALSize();
+	return wal->GetWALSize();
 }
 
 optional_ptr<WriteAheadLog> StorageManager::GetWAL() {
 	if (InMemory() || read_only || !load_complete) {
 		return nullptr;
 	}
-
-	if (!wal) {
-		auto wal_path = GetWALPath();
-		wal = make_uniq<WriteAheadLog>(db, wal_path);
-	}
 	return wal.get();
 }
 
 void StorageManager::ResetWAL() {
-	auto wal_ptr = GetWAL();
-	if (wal_ptr) {
-		wal_ptr->Delete();
-	}
-	wal.reset();
+	wal->Delete();
 }
 
 string StorageManager::GetWALPath() {
@@ -109,23 +83,28 @@ bool StorageManager::InMemory() {
 	return path == IN_MEMORY_PATH;
 }
 
-void StorageManager::Initialize(const optional_idx block_alloc_size) {
+void StorageManager::Initialize(QueryContext context, StorageOptions &options) {
 	bool in_memory = InMemory();
 	if (in_memory && read_only) {
 		throw CatalogException("Cannot launch in-memory database in read-only mode!");
 	}
 
 	// Create or load the database from disk, if not in-memory mode.
-	LoadDatabase(block_alloc_size);
+	LoadDatabase(context, options);
+
+	if (options.encryption) {
+		ClearUserKey(options.user_key);
+	}
 }
 
-///////////////////////////////////////////////////////////////////////////
 class SingleFileTableIOManager : public TableIOManager {
 public:
-	explicit SingleFileTableIOManager(BlockManager &block_manager) : block_manager(block_manager) {
+	explicit SingleFileTableIOManager(BlockManager &block_manager, idx_t row_group_size)
+	    : block_manager(block_manager), row_group_size(row_group_size) {
 	}
 
 	BlockManager &block_manager;
+	idx_t row_group_size;
 
 public:
 	BlockManager &GetIndexBlockManager() override {
@@ -137,64 +116,114 @@ public:
 	MetadataManager &GetMetadataManager() override {
 		return block_manager.GetMetadataManager();
 	}
+	idx_t GetRowGroupSize() const override {
+		return row_group_size;
+	}
 };
 
 SingleFileStorageManager::SingleFileStorageManager(AttachedDatabase &db, string path, bool read_only)
     : StorageManager(db, std::move(path), read_only) {
 }
 
-void SingleFileStorageManager::LoadDatabase(const optional_idx block_alloc_size) {
+void SingleFileStorageManager::LoadDatabase(QueryContext context, StorageOptions &storage_options) {
+
 	if (InMemory()) {
-		block_manager = make_uniq<InMemoryBlockManager>(BufferManager::GetBufferManager(db), DEFAULT_BLOCK_ALLOC_SIZE);
-		table_io_manager = make_uniq<SingleFileTableIOManager>(*block_manager);
+		block_manager = make_uniq<InMemoryBlockManager>(BufferManager::GetBufferManager(db), DEFAULT_BLOCK_ALLOC_SIZE,
+		                                                DEFAULT_BLOCK_HEADER_STORAGE_SIZE);
+		table_io_manager = make_uniq<SingleFileTableIOManager>(*block_manager, DEFAULT_ROW_GROUP_SIZE);
 		return;
 	}
 
 	auto &fs = FileSystem::Get(db);
 	auto &config = DBConfig::Get(db);
-	if (!config.options.enable_external_access) {
-		if (!db.IsInitialDatabase()) {
-			throw PermissionException("Attaching on-disk databases is disabled through configuration");
-		}
-	}
 
 	StorageManagerOptions options;
 	options.read_only = read_only;
 	options.use_direct_io = config.options.use_direct_io;
 	options.debug_initialize = config.options.debug_initialize;
+	options.storage_version = storage_options.storage_version;
 
+	if (storage_options.encryption) {
+		// key is given upon ATTACH
+		D_ASSERT(storage_options.block_header_size == DEFAULT_ENCRYPTION_BLOCK_HEADER_SIZE);
+		options.encryption_options.encryption_enabled = true;
+		options.encryption_options.cipher = EncryptionTypes::StringToCipher(storage_options.encryption_cipher);
+		options.encryption_options.user_key = std::move(storage_options.user_key);
+	}
+
+	idx_t row_group_size = DEFAULT_ROW_GROUP_SIZE;
+	if (storage_options.row_group_size.IsValid()) {
+		row_group_size = storage_options.row_group_size.GetIndex();
+		if (row_group_size == 0) {
+			throw NotImplementedException("Invalid row group size: %llu - row group size must be bigger than 0",
+			                              row_group_size);
+		}
+		if (row_group_size % STANDARD_VECTOR_SIZE != 0) {
+			throw NotImplementedException(
+			    "Invalid row group size: %llu - row group size must be divisible by the vector size (%llu)",
+			    row_group_size, STANDARD_VECTOR_SIZE);
+		}
+	}
 	// Check if the database file already exists.
 	// Note: a file can also exist if there was a ROLLBACK on a previous transaction creating that file.
 	if (!read_only && !fs.FileExists(path)) {
 		// file does not exist and we are in read-write mode
 		// create a new file
 
-		// check if a WAL file already exists
 		auto wal_path = GetWALPath();
-		if (fs.FileExists(wal_path)) {
-			// WAL file exists but database file does not
-			// remove the WAL
-			fs.RemoveFile(wal_path);
-		}
+		// try to remove the WAL file if it exists
+		fs.TryRemoveFile(wal_path);
 
 		// Set the block allocation size for the new database file.
-		if (block_alloc_size.IsValid()) {
+		if (storage_options.block_alloc_size.IsValid()) {
 			// Use the option provided by the user.
-			options.block_alloc_size = block_alloc_size;
+			Storage::VerifyBlockAllocSize(storage_options.block_alloc_size.GetIndex());
+			options.block_alloc_size = storage_options.block_alloc_size;
 		} else {
 			// No explicit option provided: use the default option.
 			options.block_alloc_size = config.options.default_block_alloc_size;
 		}
+		//! set the block header size for the encrypted database files
+		//! set the database to encrypted
+		//! update the storage version to 1.4.0
+		if (storage_options.block_header_size.IsValid()) {
+			// Use the header size for the corresponding encryption algorithm.
+			Storage::VerifyBlockHeaderSize(storage_options.block_header_size.GetIndex());
+			options.block_header_size = storage_options.block_header_size;
+			options.storage_version = storage_options.storage_version;
+		} else {
+			// No encryption; use the default option.
+			options.block_header_size = config.options.default_block_header_size;
+		}
+		if (!options.storage_version.IsValid()) {
+			// when creating a new database we default to the serialization version specified in the config
+			options.storage_version = config.options.serialization_compatibility.serialization_version;
+		}
 
 		// Initialize the block manager before creating a new database.
 		auto sf_block_manager = make_uniq<SingleFileBlockManager>(db, path, options);
-		sf_block_manager->CreateNewDatabase();
+		sf_block_manager->CreateNewDatabase(context);
 		block_manager = std::move(sf_block_manager);
-		table_io_manager = make_uniq<SingleFileTableIOManager>(*block_manager);
-
+		table_io_manager = make_uniq<SingleFileTableIOManager>(*block_manager, row_group_size);
+		wal = make_uniq<WriteAheadLog>(db, wal_path);
 	} else {
 		// Either the file exists, or we are in read-only mode, so we
 		// try to read the existing file on disk.
+
+		// set the block header size for the encrypted database files
+		// (also if they already exist)
+		if (storage_options.encryption) {
+			options.encryption_options.encryption_enabled = true;
+			D_ASSERT(storage_options.block_header_size == DEFAULT_ENCRYPTION_BLOCK_HEADER_SIZE);
+		}
+		if (storage_options.block_header_size.IsValid()) {
+			Storage::VerifyBlockHeaderSize(storage_options.block_header_size.GetIndex());
+			options.block_header_size = storage_options.block_header_size;
+			options.storage_version = storage_options.storage_version;
+		} else {
+			// No explicit option provided: use the default option.
+			options.block_header_size = config.options.default_block_header_size;
+		}
 
 		// Initialize the block manager while loading the database file.
 		// We'll construct the SingleFileBlockManager with the default block allocation size,
@@ -202,27 +231,40 @@ void SingleFileStorageManager::LoadDatabase(const optional_idx block_alloc_size)
 		auto sf_block_manager = make_uniq<SingleFileBlockManager>(db, path, options);
 		sf_block_manager->LoadExistingDatabase();
 		block_manager = std::move(sf_block_manager);
-		table_io_manager = make_uniq<SingleFileTableIOManager>(*block_manager);
+		table_io_manager = make_uniq<SingleFileTableIOManager>(*block_manager, row_group_size);
 
-		if (block_alloc_size.IsValid() && block_alloc_size.GetIndex() != block_manager->GetBlockAllocSize()) {
-			throw InvalidInputException(
-			    "block size parameter does not match the file's block size, got %llu, expected %llu",
-			    block_alloc_size.GetIndex(), block_manager->GetBlockAllocSize());
+		if (storage_options.block_alloc_size.IsValid()) {
+			// user-provided block alloc size
+			idx_t block_alloc_size = storage_options.block_alloc_size.GetIndex();
+			if (block_alloc_size != block_manager->GetBlockAllocSize()) {
+				throw InvalidInputException(
+				    "block size parameter does not match the file's block size, got %llu, expected %llu",
+				    storage_options.block_alloc_size.GetIndex(), block_manager->GetBlockAllocSize());
+			}
+		}
+
+		if (storage_options.block_header_size.IsValid()) {
+			// block header size for encrypted database files
+			idx_t block_header_size = storage_options.block_header_size.GetIndex();
+			if (block_header_size != block_manager->GetBlockHeaderSize()) {
+				throw InvalidInputException(
+				    "block header size does not match the file's block header size, got %llu, expected %llu",
+				    storage_options.block_header_size.GetIndex(), block_manager->GetBlockHeaderSize());
+			}
 		}
 
 		// load the db from storage
 		auto checkpoint_reader = SingleFileCheckpointReader(*this);
 		checkpoint_reader.LoadFromStorage();
 
-		// check if the WAL file exists
 		auto wal_path = GetWALPath();
-		auto handle = fs.OpenFile(wal_path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS);
-		if (handle) {
-			// replay the WAL
-			if (WriteAheadLog::Replay(db, std::move(handle))) {
-				fs.RemoveFile(wal_path);
-			}
-		}
+		wal = WriteAheadLog::Replay(fs, db, wal_path);
+	}
+	if (row_group_size > 122880ULL && GetStorageVersion() < 4) {
+		throw InvalidInputException("Unsupported row group size %llu - row group sizes >= 122_880 are only supported "
+		                            "with STORAGE_VERSION '1.2.0' or above.\nExplicitly specify a newer storage "
+		                            "version when creating the database to enable larger row groups",
+		                            row_group_size);
 	}
 
 	load_complete = true;
@@ -350,7 +392,7 @@ bool SingleFileStorageManager::IsCheckpointClean(MetaBlockPointer checkpoint_id)
 	return block_manager->IsRootBlock(checkpoint_id);
 }
 
-void SingleFileStorageManager::CreateCheckpoint(CheckpointOptions options) {
+void SingleFileStorageManager::CreateCheckpoint(QueryContext context, CheckpointOptions options) {
 	if (InMemory() || read_only || !load_complete) {
 		return;
 	}
@@ -361,7 +403,7 @@ void SingleFileStorageManager::CreateCheckpoint(CheckpointOptions options) {
 	if (GetWALSize() > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
 		// we only need to checkpoint if there is anything in the WAL
 		try {
-			SingleFileCheckpointWriter checkpointer(db, *block_manager, options.type);
+			SingleFileCheckpointWriter checkpointer(context, db, *block_manager, options.type);
 			checkpointer.CreateCheckpoint();
 		} catch (std::exception &ex) {
 			ErrorData error(ex);

@@ -8,13 +8,11 @@
 
 #pragma once
 
-#include "duckdb/common/assert.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/helper.hpp"
 
-#include <limits>
 
 namespace duckdb {
 
@@ -212,6 +210,7 @@ enum class LogicalTypeId : uint8_t {
 	UBIGINT = 31,
 	TIMESTAMP_TZ = 32,
 	TIME_TZ = 34,
+	TIME_NS = 35,
 	BIT = 36,
 	STRING_LITERAL = 37, /* string literals, used for constant strings - only exists while binding */
 	INTEGER_LITERAL = 38,/* integer literals, used for constant integers - only exists while binding */
@@ -234,6 +233,7 @@ enum class LogicalTypeId : uint8_t {
 };
 
 struct ExtraTypeInfo;
+struct ExtensionTypeInfo;
 
 struct aggregate_state_t; // NOLINT: mimic std casing
 
@@ -252,7 +252,7 @@ struct LogicalType {
 	inline PhysicalType InternalType() const {
 		return physical_type_;
 	}
-	inline const ExtraTypeInfo *AuxInfo() const {
+	inline const optional_ptr<ExtraTypeInfo> AuxInfo() const {
 		return type_info_.get();
 	}
 	inline bool IsNested() const {
@@ -268,12 +268,17 @@ struct LogicalType {
 		}
 		return false;
 	}
+	inline bool IsUnknown() const {
+		return id_ == LogicalTypeId::UNKNOWN;
+	}
 
 	inline shared_ptr<ExtraTypeInfo> GetAuxInfoShrPtr() const {
 		return type_info_;
 	}
 
-	//! DeepCopy() will make a unique copy of any ExtraTypeInfo as well
+	//! Copies the logical type, making a new ExtraTypeInfo
+	LogicalType Copy() const;
+	//! DeepCopy() will make a unique copy of any nested ExtraTypeInfo as well
 	LogicalType DeepCopy() const;
 
 	inline void CopyAuxInfo(const LogicalType &other) {
@@ -317,17 +322,19 @@ struct LogicalType {
 	}
 	DUCKDB_API string ToString() const;
 	DUCKDB_API bool IsIntegral() const;
+	DUCKDB_API bool IsFloating() const;
 	DUCKDB_API bool IsNumeric() const;
+	DUCKDB_API static bool IsNumeric(LogicalTypeId type);
 	DUCKDB_API bool IsTemporal() const;
 	DUCKDB_API hash_t Hash() const;
 	DUCKDB_API void SetAlias(string alias);
 	DUCKDB_API bool HasAlias() const;
 	DUCKDB_API string GetAlias() const;
-	DUCKDB_API void SetModifiers(vector<Value> modifiers);
-	DUCKDB_API bool HasModifiers() const;
-	DUCKDB_API vector<Value> GetModifiersCopy() const;
-	DUCKDB_API optional_ptr<vector<Value>> GetModifiers();
-	DUCKDB_API optional_ptr<const vector<Value>> GetModifiers() const;
+
+	DUCKDB_API bool HasExtensionInfo() const;
+	DUCKDB_API optional_ptr<const ExtensionTypeInfo> GetExtensionInfo() const;
+	DUCKDB_API optional_ptr<ExtensionTypeInfo> GetExtensionInfo();
+	DUCKDB_API void SetExtensionInfo(unique_ptr<ExtensionTypeInfo> info);
 
 	//! Returns the maximum logical type when combining the two types - or throws an exception if combining is not possible
 	DUCKDB_API static LogicalType MaxLogicalType(ClientContext &context, const LogicalType &left, const LogicalType &right);
@@ -338,12 +345,19 @@ struct LogicalType {
 	DUCKDB_API static LogicalType NormalizeType(const LogicalType &type);
 
 
-		//! Gets the decimal properties of a numeric type. Fails if the type is not numeric.
+	//! Gets the decimal properties of a numeric type. Fails if the type is not numeric.
 	DUCKDB_API bool GetDecimalProperties(uint8_t &width, uint8_t &scale) const;
 
 	DUCKDB_API void Verify() const;
 
+	DUCKDB_API bool IsSigned() const;
+	DUCKDB_API bool IsUnsigned() const;
+
 	DUCKDB_API bool IsValid() const;
+	DUCKDB_API bool IsComplete() const;
+
+	//! True, if this type supports in-place updates.
+	bool SupportsRegularUpdate() const;
 
 
 private:
@@ -374,6 +388,7 @@ public:
 	static constexpr const LogicalTypeId TIMESTAMP_MS = LogicalTypeId::TIMESTAMP_MS;
 	static constexpr const LogicalTypeId TIMESTAMP_NS = LogicalTypeId::TIMESTAMP_NS;
 	static constexpr const LogicalTypeId TIME = LogicalTypeId::TIME;
+	static constexpr const LogicalTypeId TIME_NS = LogicalTypeId::TIME_NS;
 	static constexpr const LogicalTypeId TIMESTAMP_TZ = LogicalTypeId::TIMESTAMP_TZ;
 	static constexpr const LogicalTypeId TIME_TZ = LogicalTypeId::TIME_TZ;
 	static constexpr const LogicalTypeId VARCHAR = LogicalTypeId::VARCHAR;

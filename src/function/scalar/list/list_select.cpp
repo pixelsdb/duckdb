@@ -4,8 +4,11 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/function/scalar/list_functions.hpp"
 
 namespace duckdb {
+
+namespace {
 
 struct SetSelectionVectorSelect {
 	static void SetSelectionVector(SelectionVector &selection_vector, ValidityMask &validity_mask,
@@ -68,7 +71,7 @@ struct SetSelectionVectorWhere {
 };
 
 template <class OP>
-static void ListSelectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+void ListSelectFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	D_ASSERT(args.data.size() == 2);
 	Vector &list = args.data[0];
 	Vector &selection_list = args.data[1];
@@ -138,15 +141,15 @@ static void ListSelectFunction(DataChunk &args, ExpressionState &state, Vector &
 		}
 		result_data[j].length = offset - result_data[j].offset;
 	}
-	result_entry.Slice(input_entry, result_selection_vec, count);
+	result_entry.Slice(input_entry, result_selection_vec, offset);
 	result_entry.Flatten(offset);
 	ListVector::SetListSize(result, offset);
 	FlatVector::SetValidity(result_entry, entry_validity_mask);
 	result.SetVectorType(args.AllConstant() ? VectorType::CONSTANT_VECTOR : VectorType::FLAT_VECTOR);
 }
 
-static unique_ptr<FunctionData> ListSelectBind(ClientContext &context, ScalarFunction &bound_function,
-                                               vector<unique_ptr<Expression>> &arguments) {
+unique_ptr<FunctionData> ListSelectBind(ClientContext &context, ScalarFunction &bound_function,
+                                        vector<unique_ptr<Expression>> &arguments) {
 	D_ASSERT(bound_function.arguments.size() == 2);
 
 	// If the first argument is an array, cast it to a list
@@ -165,6 +168,8 @@ static unique_ptr<FunctionData> ListSelectBind(ClientContext &context, ScalarFun
 	bound_function.return_type = arguments[0]->return_type;
 	return make_uniq<VariableReturnBindData>(bound_function.return_type);
 }
+
+} // namespace
 ScalarFunction ListWhereFun::GetFunction() {
 	auto fun = ScalarFunction({LogicalType::LIST(LogicalTypeId::ANY), LogicalType::LIST(LogicalType::BOOLEAN)},
 	                          LogicalType::LIST(LogicalTypeId::ANY), ListSelectFunction<SetSelectionVectorWhere>,
@@ -179,8 +184,4 @@ ScalarFunction ListSelectFun::GetFunction() {
 	return fun;
 }
 
-void ListSelectFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction({"list_select", "array_select"}, ListSelectFun::GetFunction());
-	set.AddFunction({"list_where", "array_where"}, ListWhereFun::GetFunction());
-}
 } // namespace duckdb

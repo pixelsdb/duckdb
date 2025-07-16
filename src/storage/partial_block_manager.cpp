@@ -34,9 +34,11 @@ void PartialBlock::FlushInternal(const idx_t free_space_left) {
 // PartialBlockManager
 //===--------------------------------------------------------------------===//
 
-PartialBlockManager::PartialBlockManager(BlockManager &block_manager, PartialBlockType partial_block_type,
-                                         optional_idx max_partial_block_size_p, uint32_t max_use_count)
-    : block_manager(block_manager), partial_block_type(partial_block_type), max_use_count(max_use_count) {
+PartialBlockManager::PartialBlockManager(QueryContext context, BlockManager &block_manager,
+                                         PartialBlockType partial_block_type, optional_idx max_partial_block_size_p,
+                                         uint32_t max_use_count)
+    : context(context.GetClientContext()), block_manager(block_manager), partial_block_type(partial_block_type),
+      max_use_count(max_use_count) {
 
 	if (max_partial_block_size_p.IsValid()) {
 		max_partial_block_size = NumericCast<uint32_t>(max_partial_block_size_p.GetIndex());
@@ -46,6 +48,7 @@ PartialBlockManager::PartialBlockManager(BlockManager &block_manager, PartialBlo
 	// Use the default maximum partial block size with a ratio of 20% free and 80% utilization.
 	max_partial_block_size = NumericCast<uint32_t>(block_manager.GetBlockSize() / 5 * 4);
 }
+
 PartialBlockManager::~PartialBlockManager() {
 }
 
@@ -131,8 +134,7 @@ void PartialBlockManager::RegisterPartialBlock(PartialBlockAllocation allocation
 	}
 	// Flush any block that we're not going to reuse.
 	if (block_to_free) {
-		block_to_free->Flush(free_space);
-		AddWrittenBlock(block_to_free->state.block_id);
+		block_to_free->Flush(context, free_space);
 	}
 }
 
@@ -161,19 +163,7 @@ void PartialBlockManager::Merge(PartialBlockManager &other) {
 			partially_filled_blocks.insert(make_pair(e.first, std::move(e.second)));
 		}
 	}
-	// copy over the written blocks
-	for (auto &block_id : other.written_blocks) {
-		AddWrittenBlock(block_id);
-	}
-	other.written_blocks.clear();
 	other.partially_filled_blocks.clear();
-}
-
-void PartialBlockManager::AddWrittenBlock(block_id_t block) {
-	auto entry = written_blocks.insert(block);
-	if (!entry.second) {
-		throw InternalException("Written block already exists");
-	}
 }
 
 void PartialBlockManager::ClearBlocks() {
@@ -185,7 +175,7 @@ void PartialBlockManager::ClearBlocks() {
 
 void PartialBlockManager::FlushPartialBlocks() {
 	for (auto &e : partially_filled_blocks) {
-		e.second->Flush(e.first);
+		e.second->Flush(context, e.first);
 	}
 	partially_filled_blocks.clear();
 }
@@ -194,11 +184,12 @@ BlockManager &PartialBlockManager::GetBlockManager() const {
 	return block_manager;
 }
 
+optional_ptr<ClientContext> PartialBlockManager::GetClientContext() const {
+	return context;
+}
+
 void PartialBlockManager::Rollback() {
 	ClearBlocks();
-	for (auto &block_id : written_blocks) {
-		block_manager.MarkBlockAsFree(block_id);
-	}
 }
 
 } // namespace duckdb

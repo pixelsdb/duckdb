@@ -1,9 +1,9 @@
 #include "duckdb/optimizer/filter_pushdown.hpp"
-
 #include "duckdb/optimizer/filter_combiner.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -15,12 +15,14 @@ using Filter = FilterPushdown::Filter;
 
 void FilterPushdown::CheckMarkToSemi(LogicalOperator &op, unordered_set<idx_t> &table_bindings) {
 	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
 		auto &join = op.Cast<LogicalComparisonJoin>();
 		if (join.join_type != JoinType::MARK) {
 			break;
 		}
-		// if the projected table bindings include the mark join index,
+		// if an operator above the mark join includes the mark join index,
+		// then the mark join cannot be converted to a semi join
 		if (table_bindings.find(join.mark_index) != table_bindings.end()) {
 			join.convert_mark_to_semi = false;
 		}
@@ -32,24 +34,48 @@ void FilterPushdown::CheckMarkToSemi(LogicalOperator &op, unordered_set<idx_t> &
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		// when we encounter a projection, replace the table_bindings with
 		// the tables in the projection
-		auto plan_bindings = op.GetColumnBindings();
 		auto &proj = op.Cast<LogicalProjection>();
 		auto proj_bindings = proj.GetColumnBindings();
 		unordered_set<idx_t> new_table_bindings;
 		for (auto &binding : proj_bindings) {
 			auto col_index = binding.column_index;
 			auto &expr = proj.expressions.at(col_index);
-			vector<ColumnBinding> bindings_to_keep;
 			ExpressionIterator::EnumerateExpression(expr, [&](Expression &child) {
-				if (expr->expression_class == ExpressionClass::BOUND_COLUMN_REF) {
-					auto &col_ref = expr->Cast<BoundColumnRefExpression>();
+				if (child.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					auto &col_ref = child.Cast<BoundColumnRefExpression>();
+					new_table_bindings.insert(col_ref.binding.table_index);
+				}
+			});
+			table_bindings = new_table_bindings;
+		}
+		break;
+	}
+	// It's possible a mark join index makes its way into a group by as the grouping index
+	// when that happens we need to keep track of it to make sure we do not convert a mark join to semi.
+	// see filter_pushdown_into_subquery.
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		auto &aggr = op.Cast<LogicalAggregate>();
+		auto aggr_bindings = aggr.GetColumnBindings();
+		vector<ColumnBinding> bindings_to_keep;
+		for (auto &expr : aggr.groups) {
+			ExpressionIterator::EnumerateExpression(expr, [&](Expression &child) {
+				if (child.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					auto &col_ref = child.Cast<BoundColumnRefExpression>();
 					bindings_to_keep.push_back(col_ref.binding);
 				}
 			});
-			for (auto &expr_binding : bindings_to_keep) {
-				new_table_bindings.insert(expr_binding.table_index);
-			}
-			table_bindings = new_table_bindings;
+		}
+		for (auto &expr : aggr.expressions) {
+			ExpressionIterator::EnumerateExpression(expr, [&](Expression &child) {
+				if (child.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+					auto &col_ref = child.Cast<BoundColumnRefExpression>();
+					bindings_to_keep.push_back(col_ref.binding);
+				}
+			});
+		}
+		table_bindings = unordered_set<idx_t>();
+		for (auto &expr_binding : bindings_to_keep) {
+			table_bindings.insert(expr_binding.table_index);
 		}
 		break;
 	}
@@ -107,6 +133,8 @@ unique_ptr<LogicalOperator> FilterPushdown::Rewrite(unique_ptr<LogicalOperator> 
 		return PushdownLimit(std::move(op));
 	case LogicalOperatorType::LOGICAL_WINDOW:
 		return PushdownWindow(std::move(op));
+	case LogicalOperatorType::LOGICAL_UNNEST:
+		return PushdownUnnest(std::move(op));
 	default:
 		return FinishPushdown(std::move(op));
 	}
@@ -121,35 +149,60 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOpera
 	         op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op->type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
 	         op->type == LogicalOperatorType::LOGICAL_DELIM_JOIN);
 	auto &join = op->Cast<LogicalJoin>();
-	if (!join.left_projection_map.empty() || !join.right_projection_map.empty()) {
-		// cannot push down further otherwise the projection maps won't be preserved
-		return FinishPushdown(std::move(op));
-	}
+
+	const auto restore_projection_maps = join.HasProjectionMap();
+	auto left_projection_map = join.left_projection_map;
+	auto right_projection_map = join.right_projection_map;
 
 	unordered_set<idx_t> left_bindings, right_bindings;
 	LogicalJoin::GetTableReferences(*op->children[0], left_bindings);
 	LogicalJoin::GetTableReferences(*op->children[1], right_bindings);
 
+	unique_ptr<LogicalOperator> result;
 	switch (join.join_type) {
 	case JoinType::INNER:
 		//	AsOf joins can't push anything into the RHS, so treat it as a left join
 		if (op->type == LogicalOperatorType::LOGICAL_ASOF_JOIN) {
-			return PushdownLeftJoin(std::move(op), left_bindings, right_bindings);
+			result = PushdownLeftJoin(std::move(op), left_bindings, right_bindings);
+			break;
 		}
-		return PushdownInnerJoin(std::move(op), left_bindings, right_bindings);
+		result = PushdownInnerJoin(std::move(op), left_bindings, right_bindings);
+		break;
 	case JoinType::LEFT:
-		return PushdownLeftJoin(std::move(op), left_bindings, right_bindings);
+		result = PushdownLeftJoin(std::move(op), left_bindings, right_bindings);
+		break;
 	case JoinType::MARK:
-		return PushdownMarkJoin(std::move(op), left_bindings, right_bindings);
+		result = PushdownMarkJoin(std::move(op), left_bindings, right_bindings);
+		break;
 	case JoinType::SINGLE:
-		return PushdownSingleJoin(std::move(op), left_bindings, right_bindings);
+		result = PushdownSingleJoin(std::move(op), left_bindings, right_bindings);
+		break;
 	case JoinType::SEMI:
 	case JoinType::ANTI:
-		return PushdownSemiAntiJoin(std::move(op));
+		result = PushdownSemiAntiJoin(std::move(op));
+		break;
 	default:
 		// unsupported join type: stop pushing down
 		return FinishPushdown(std::move(op));
 	}
+
+	if (restore_projection_maps) {
+		switch (result->type) {
+		case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+		case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+		case LogicalOperatorType::LOGICAL_ANY_JOIN:
+		case LogicalOperatorType::LOGICAL_DELIM_JOIN: {
+			// Pushing down filter through join didn't change operator type (e.g., LogicalEmptyResult), restore maps
+			auto &result_join = result->Cast<LogicalJoin>();
+			result_join.left_projection_map = std::move(left_projection_map);
+			result_join.right_projection_map = std::move(right_projection_map);
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	return result;
 }
 void FilterPushdown::PushFilters() {
 	for (auto &f : filters) {

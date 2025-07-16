@@ -8,12 +8,15 @@
 
 #pragma once
 
+#include "duckdb/common/arrow/arrow_type_extension.hpp"
+
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/common/cgroups.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/encryption_state.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
+#include "duckdb/common/enums/thread_pin_mode.hpp"
 #include "duckdb/common/enums/compression_type.hpp"
 #include "duckdb/common/enums/optimizer_type.hpp"
 #include "duckdb/common/enums/order_type.hpp"
@@ -24,15 +27,19 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/winapi.hpp"
+#include "duckdb/execution/index/index_type_set.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
 #include "duckdb/function/replacement_scan.hpp"
+#include "duckdb/main/client_properties.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/parser/parsed_data/create_info.hpp"
 #include "duckdb/parser/parser_extension.hpp"
 #include "duckdb/planner/operator_extension.hpp"
 #include "duckdb/storage/compression/bitpacking.hpp"
-#include "duckdb/main/client_properties.hpp"
-#include "duckdb/execution/index/index_type_set.hpp"
+#include "duckdb/function/encoding_function.hpp"
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/common/enums/debug_vector_verification.hpp"
+#include "duckdb/logging/logging.hpp"
 
 namespace duckdb {
 
@@ -50,8 +57,10 @@ class ExtensionCallback;
 class SecretManager;
 class CompressionInfo;
 class EncryptionUtil;
+class HTTPUtil;
 
 struct CompressionFunctionSet;
+struct DatabaseCacheEntry;
 struct DBConfig;
 
 enum class CheckpointAbort : uint8_t {
@@ -70,7 +79,7 @@ typedef Value (*get_setting_function_t)(const ClientContext &context);
 struct ConfigurationOption {
 	const char *name;
 	const char *description;
-	LogicalTypeId parameter_type;
+	const char *parameter_type;
 	set_global_function_t set_global;
 	set_local_function_t set_local;
 	reset_global_function_t reset_global;
@@ -96,6 +105,8 @@ struct ExtensionOption {
 
 class SerializationCompatibility {
 public:
+	static SerializationCompatibility FromDatabase(AttachedDatabase &db);
+	static SerializationCompatibility FromIndex(idx_t serialization_version);
 	static SerializationCompatibility FromString(const string &input);
 	static SerializationCompatibility Default();
 	static SerializationCompatibility Latest();
@@ -168,12 +179,12 @@ struct DBConfigOptions {
 	string collation = string();
 	//! The order type used when none is specified (default: ASC)
 	OrderType default_order_type = OrderType::ASCENDING;
-	//! Null ordering used when none is specified (default: NULLS LAST)
+	//! Disables invalidating the database instance when encountering a fatal error.
+	bool disable_database_invalidation = false;
+	//! NULL ordering used when none is specified (default: NULLS LAST)
 	DefaultOrderByNullType default_null_order = DefaultOrderByNullType::NULLS_LAST;
 	//! enable COPY and related commands
 	bool enable_external_access = true;
-	//! Whether or not object cache is used
-	bool object_cache_enable = false;
 	//! Whether or not the global http metadata cache is used
 	bool http_metadata_cache_enable = false;
 	//! HTTP Proxy config as 'hostname:port'
@@ -195,21 +206,26 @@ struct DBConfigOptions {
 	bool initialize_default_database = true;
 	//! The set of disabled optimizers (default empty)
 	set<OptimizerType> disabled_optimizers;
+	//! The average string length required to use ZSTD compression.
+	uint64_t zstd_min_string_length = 4096;
 	//! Force a specific compression method to be used when checkpointing (if available)
 	CompressionType force_compression = CompressionType::COMPRESSION_AUTO;
+	//! The set of disabled compression methods (default empty)
+	set<CompressionType> disabled_compression_methods;
 	//! Force a specific bitpacking mode to be used when using the bitpacking compression method
 	BitpackingMode force_bitpacking_mode = BitpackingMode::AUTO;
 	//! Debug setting for window aggregation mode: (window, combine, separate)
 	WindowAggregationMode window_mode = WindowAggregationMode::WINDOW;
-	//! Whether or not preserving insertion order should be preserved
+	//! Whether preserving insertion order should be preserved
 	bool preserve_insertion_order = true;
 	//! Whether Arrow Arrays use Large or Regular buffers
 	ArrowOffsetSize arrow_offset_size = ArrowOffsetSize::REGULAR;
 	//! Whether LISTs should produce Arrow ListViews
 	bool arrow_use_list_view = false;
-	//! Whenever a DuckDB type does not have a clear native or canonical extension match in Arrow, export the types
-	//! with a duckdb.type_name extension name
-	bool arrow_arrow_lossless_conversion = false;
+	//! For DuckDB types without an obvious corresponding Arrow type, export to an Arrow extension type instead of a
+	//! more portable but less efficient format. For example, UUIDs are exported to UTF-8 (string) when false, and
+	//! arrow.uuid type when true.
+	bool arrow_lossless_conversion = false;
 	//! Whether when producing arrow objects we produce string_views or regular strings
 	bool produce_arrow_string_views = false;
 	//! Database configuration variables as controlled by SET
@@ -254,8 +270,14 @@ struct DBConfigOptions {
 	string custom_user_agent;
 	//! Use old implicit casting style (i.e. allow everything to be implicitly casted to VARCHAR)
 	bool old_implicit_casting = false;
+	//!  By default, WAL is encrypted for encrypted databases
+	bool wal_encryption = true;
+	//! Encrypt the temp files
+	bool temp_file_encryption = false;
 	//! The default block allocation size for new duckdb database files (new as-in, they do not yet exist).
 	idx_t default_block_alloc_size = DUCKDB_BLOCK_ALLOC_SIZE;
+	//! The default block header size for new duckdb database files.
+	idx_t default_block_header_size = DUCKDB_BLOCK_HEADER_STORAGE_SIZE;
 	//!  Whether or not to abort if a serialization exception is thrown during WAL playback (when reading truncated WAL)
 	bool abort_on_wal_failure = false;
 	//! The index_scan_percentage sets a threshold for index scans.
@@ -270,8 +292,30 @@ struct DBConfigOptions {
 	idx_t catalog_error_max_schemas = 100;
 	//!  Whether or not to always write to the WAL file, even if this is not required
 	bool debug_skip_checkpoint_on_commit = false;
+	//! Vector verification to enable (debug setting only)
+	DebugVectorVerification debug_verify_vector = DebugVectorVerification::NONE;
 	//! The maximum amount of vacuum tasks to schedule during a checkpoint
 	idx_t max_vacuum_tasks = 100;
+	//! Paths that are explicitly allowed, even if enable_external_access is false
+	unordered_set<string> allowed_paths;
+	//! Directories that are explicitly allowed, even if enable_external_access is false
+	set<string> allowed_directories;
+	//! The log configuration
+	LogConfig log_config = LogConfig();
+	//! Whether to enable external file caching using CachingFileSystem
+	bool enable_external_file_cache = true;
+	//! Output version of arrow depending on the format version
+	ArrowFormatVersion arrow_output_version = V1_0;
+	//! Partially process tasks before rescheduling - allows for more scheduler fairness between separate queries
+#ifdef DUCKDB_ALTERNATIVE_VERIFY
+	bool scheduler_process_partial = true;
+#else
+	bool scheduler_process_partial = false;
+#endif
+	//! Whether to pin threads to cores (linux only, default AUTOMATIC: on when there are more than 64 cores)
+	ThreadPinMode pin_threads = ThreadPinMode::AUTO;
+	//! Enable the Parquet reader to identify a Variant group structurally
+	bool variant_legacy_encoding = false;
 
 	bool operator==(const DBConfigOptions &other) const;
 };
@@ -321,6 +365,10 @@ public:
 	vector<unique_ptr<ExtensionCallback>> extension_callbacks;
 	//! Encryption Util for OpenSSL
 	shared_ptr<EncryptionUtil> encryption_util;
+	//! HTTP Request utility functions
+	shared_ptr<HTTPUtil> http_util;
+	//! Reference to the database cache entry (if any)
+	shared_ptr<DatabaseCacheEntry> db_cache_entry;
 
 public:
 	DUCKDB_API static DBConfig &GetConfig(ClientContext &context);
@@ -346,6 +394,7 @@ public:
 	DUCKDB_API void ResetOption(DatabaseInstance *db, const ConfigurationOption &option);
 	DUCKDB_API void SetOption(const string &name, Value value);
 	DUCKDB_API void ResetOption(const string &name);
+	static LogicalType ParseLogicalType(const string &type);
 
 	DUCKDB_API void CheckLock(const string &name);
 
@@ -356,6 +405,18 @@ public:
 	//! Returns the compression function matching the compression and physical type.
 	DUCKDB_API optional_ptr<CompressionFunction> GetCompressionFunction(CompressionType type,
 	                                                                    const PhysicalType physical_type);
+
+	//! Returns the encode function matching the encoding name.
+	DUCKDB_API optional_ptr<EncodingFunction> GetEncodeFunction(const string &name) const;
+	DUCKDB_API void RegisterEncodeFunction(const EncodingFunction &function) const;
+	//! Returns the encode function names.
+	DUCKDB_API vector<reference<EncodingFunction>> GetLoadedEncodedFunctions() const;
+	//! Returns the encode function matching the encoding name.
+	DUCKDB_API ArrowTypeExtension GetArrowExtension(ArrowExtensionMetadata info) const;
+	DUCKDB_API ArrowTypeExtension GetArrowExtension(const LogicalType &type) const;
+	DUCKDB_API bool HasArrowExtension(const LogicalType &type) const;
+	DUCKDB_API bool HasArrowExtension(ArrowExtensionMetadata info) const;
+	DUCKDB_API void RegisterArrowExtension(const ArrowTypeExtension &extension) const;
 
 	bool operator==(const DBConfig &other);
 	bool operator!=(const DBConfig &other);
@@ -373,8 +434,27 @@ public:
 	OrderByNullType ResolveNullOrder(OrderType order_type, OrderByNullType null_type) const;
 	const string UserAgent() const;
 
+	template <class OP>
+	typename OP::RETURN_TYPE GetSetting(const ClientContext &context) {
+		std::lock_guard<mutex> lock(config_lock);
+		return OP::GetSetting(context).template GetValue<typename OP::RETURN_TYPE>();
+	}
+
+	template <class OP>
+	Value GetSettingValue(const ClientContext &context) {
+		std::lock_guard<mutex> lock(config_lock);
+		return OP::GetSetting(context);
+	}
+
+	bool CanAccessFile(const string &path, FileType type);
+	void AddAllowedDirectory(const string &path);
+	void AddAllowedPath(const string &path);
+	string SanitizeAllowedPath(const string &path) const;
+
 private:
 	unique_ptr<CompressionFunctionSet> compression_functions;
+	unique_ptr<EncodingFunctionSet> encoding_functions;
+	unique_ptr<ArrowTypeExtensionSet> arrow_extensions;
 	unique_ptr<CastFunctionSet> cast_functions;
 	unique_ptr<CollationBinding> collation_bindings;
 	unique_ptr<IndexTypeSet> index_types;

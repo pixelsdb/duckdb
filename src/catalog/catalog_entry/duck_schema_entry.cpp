@@ -67,25 +67,15 @@ static void FindForeignKeyInformation(TableCatalogEntry &table, AlterForeignKeyT
 	}
 }
 
-static void LazyLoadIndexes(ClientContext &context, CatalogEntry &entry) {
-	if (entry.type == CatalogType::TABLE_ENTRY) {
-		auto &table_entry = entry.Cast<TableCatalogEntry>();
-		table_entry.GetStorage().InitializeIndexes(context);
-	} else if (entry.type == CatalogType::INDEX_ENTRY) {
-		auto &index_entry = entry.Cast<IndexCatalogEntry>();
-		auto &table_entry = Catalog::GetEntry(context, CatalogType::TABLE_ENTRY, index_entry.catalog.GetName(),
-		                                      index_entry.GetSchemaName(), index_entry.GetTableName())
-		                        .Cast<TableCatalogEntry>();
-		table_entry.GetStorage().InitializeIndexes(context);
-	}
-}
-
 DuckSchemaEntry::DuckSchemaEntry(Catalog &catalog, CreateSchemaInfo &info)
-    : SchemaCatalogEntry(catalog, info), tables(catalog, make_uniq<DefaultViewGenerator>(catalog, *this)),
-      indexes(catalog), table_functions(catalog, make_uniq<DefaultTableFunctionGenerator>(catalog, *this)),
+    : SchemaCatalogEntry(catalog, info),
+      tables(catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultViewGenerator>(catalog, *this) : nullptr),
+      indexes(catalog),
+      table_functions(catalog,
+                      catalog.IsSystemCatalog() ? make_uniq<DefaultTableFunctionGenerator>(catalog, *this) : nullptr),
       copy_functions(catalog), pragma_functions(catalog),
-      functions(catalog, make_uniq<DefaultFunctionGenerator>(catalog, *this)), sequences(catalog), collations(catalog),
-      types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)) {
+      functions(catalog, catalog.IsSystemCatalog() ? make_uniq<DefaultFunctionGenerator>(catalog, *this) : nullptr),
+      sequences(catalog), collations(catalog), types(catalog, make_uniq<DefaultTypeGenerator>(catalog, *this)) {
 }
 
 unique_ptr<CatalogEntry> DuckSchemaEntry::Copy(ClientContext &context) const {
@@ -119,6 +109,13 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddEntryInternal(CatalogTransaction 
 	// first find the set for this entry
 	auto &set = GetCatalogSet(entry_type);
 	dependencies.AddDependency(*this);
+	if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
+		auto old_entry = set.GetEntry(transaction, entry_name);
+		if (old_entry) {
+			return nullptr;
+		}
+	}
+
 	if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 		// CREATE OR REPLACE: first try to drop the entry
 		auto old_entry = set.GetEntry(transaction, entry_name);
@@ -160,6 +157,9 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::CreateTable(CatalogTransaction trans
 		// make a dependency between this table and referenced table
 		auto &set = GetCatalogSet(CatalogType::TABLE_ENTRY);
 		info.dependencies.AddDependency(*set.GetEntry(transaction, fk_info.name));
+	}
+	for (auto &dep : info.dependencies.Set()) {
+		table->dependencies.AddDependency(dep);
 	}
 
 	auto entry = AddEntryInternal(transaction, std::move(table), info.Base().on_conflict, info.dependencies);
@@ -315,12 +315,9 @@ void DuckSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 		throw InternalException("Failed to drop entry \"%s\" - entry could not be found", info.name);
 	}
 	if (existing_entry->type != info.type) {
-		throw CatalogException("Existing object %s is of type %s, trying to replace with type %s", info.name,
+		throw CatalogException("Existing object %s is of type %s, trying to drop type %s", info.name,
 		                       CatalogTypeToString(existing_entry->type), CatalogTypeToString(info.type));
 	}
-
-	// if this is a index or table with indexes, initialize any unknown index instances
-	LazyLoadIndexes(context, *existing_entry);
 
 	vector<unique_ptr<AlterForeignKeyInfo>> fk_arrays;
 	if (existing_entry->type == CatalogType::TABLE_ENTRY) {
@@ -354,14 +351,19 @@ void DuckSchemaEntry::OnDropEntry(CatalogTransaction transaction, CatalogEntry &
 	local_storage.DropTable(table_entry.GetStorage());
 }
 
-optional_ptr<CatalogEntry> DuckSchemaEntry::GetEntry(CatalogTransaction transaction, CatalogType type,
-                                                     const string &name) {
-	return GetCatalogSet(type).GetEntry(transaction, name);
+optional_ptr<CatalogEntry> DuckSchemaEntry::LookupEntry(CatalogTransaction transaction,
+                                                        const EntryLookupInfo &lookup_info) {
+	return GetCatalogSet(lookup_info.GetCatalogType()).GetEntry(transaction, lookup_info.GetEntryName());
 }
 
-SimilarCatalogEntry DuckSchemaEntry::GetSimilarEntry(CatalogTransaction transaction, CatalogType type,
-                                                     const string &name) {
-	return GetCatalogSet(type).SimilarEntry(transaction, name);
+CatalogSet::EntryLookup DuckSchemaEntry::LookupEntryDetailed(CatalogTransaction transaction,
+                                                             const EntryLookupInfo &lookup_info) {
+	return GetCatalogSet(lookup_info.GetCatalogType()).GetEntryDetailed(transaction, lookup_info.GetEntryName());
+}
+
+SimilarCatalogEntry DuckSchemaEntry::GetSimilarEntry(CatalogTransaction transaction,
+                                                     const EntryLookupInfo &lookup_info) {
+	return GetCatalogSet(lookup_info.GetCatalogType()).SimilarEntry(transaction, lookup_info.GetEntryName());
 }
 
 CatalogSet &DuckSchemaEntry::GetCatalogSet(CatalogType type) {

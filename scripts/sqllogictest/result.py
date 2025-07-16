@@ -21,6 +21,7 @@ from .statement import (
     Sleep,
     SleepUnit,
     Skip,
+    Unzip,
     SortStyle,
     Unskip,
 )
@@ -62,9 +63,6 @@ class ExecuteResult:
 
 BUILTIN_EXTENSIONS = [
     'json',
-    'fts',
-    'tpcds',
-    'tpch',
     'parquet',
     'icu',
 ]
@@ -94,10 +92,11 @@ class SQLLogicStatementData:
 
 
 class TestException(Exception):
+    __test__ = False
     __slots__ = ['data', 'message', 'result']
 
     def __init__(self, data: SQLLogicStatementData, message: str, result: ExecuteResult):
-        self.message = f'{str(data)} {message}'
+        self.message = message
         super().__init__(self.message)
         self.data = data
         self.result = result
@@ -332,9 +331,9 @@ class QueryResult:
                 hash_compare_error = values[0] != hash_value
 
             if hash_compare_error:
-                expected_result = self.result_label_map.get(query_label)
-                logger.wrong_result_hash(expected_result, self)
-                self.fail_query(query)
+                expected_result = runner.result_label_map.get(query_label)
+                # logger.wrong_result_hash(expected_result, self)
+                context.fail(query)
 
             assert not hash_compare_error
 
@@ -456,6 +455,19 @@ def matches_regex(input: str, actual_str: str) -> bool:
     re_pattern = re.compile(regex_str, re_options)
     regex_matches = bool(re_pattern.fullmatch(actual_str))
     return regex_matches == should_match
+
+
+def has_external_access(conn):
+    # this is required for the python tester to work, as we make use of replacement scans
+    try:
+        res = conn.sql("select current_setting('enable_external_access')").fetchone()[0]
+        return res
+    except duckdb.TransactionException:
+        return True
+    except duckdb.BinderException:
+        return True
+    except duckdb.InvalidInputException:
+        return True
 
 
 def compare_values(result: QueryResult, actual_str, expected_str, current_column):
@@ -707,7 +719,7 @@ class SQLLogicContext:
         # Apply a replacement for every registered keyword
         if '__BUILD_DIRECTORY__' in input:
             self.skiptest("Test contains __BUILD_DIRECTORY__ which isnt supported")
-        for key, value in self.keywords.items():
+        for key, value in self.keywords.items().__reversed__():
             input = input.replace(key, value)
         return input
 
@@ -751,6 +763,7 @@ class SQLLogicContext:
             Restart: self.execute_restart,
             HashThreshold: self.execute_hash_threshold,
             Set: self.execute_set,
+            Unzip: self.execute_unzip,
             Loop: self.execute_loop,
             Foreach: self.execute_foreach,
             Endloop: None,  # <-- should never be encountered outside of Loop/Foreach
@@ -807,6 +820,9 @@ class SQLLogicContext:
         else:
             additional_config['access_mode'] = 'automatic'
 
+        if load.version:
+            additional_config['storage_compatibility_version'] = str(load.version)
+
         self.pool = None
         self.runner.database = None
         self.runner.database = SQLLogicDatabase(dbpath, self, additional_config)
@@ -815,6 +831,8 @@ class SQLLogicContext:
     def execute_query(self, query: Query):
         assert isinstance(query, Query)
         conn = self.get_connection(query.connection_name)
+        if not has_external_access(conn):
+            self.skiptest("enable_external_access is explicitly disabled by the test")
         sql_query = '\n'.join(query.lines)
         sql_query = self.replace_keywords(sql_query)
 
@@ -885,6 +903,18 @@ class SQLLogicContext:
     def execute_skip(self, statement: Skip):
         self.runner.skip()
 
+    def execute_unzip(self, statement: Unzip):
+        import gzip
+        import shutil
+
+        source = self.replace_keywords(statement.source)
+        destination = self.replace_keywords(statement.destination)
+
+        with gzip.open(source, 'rb') as f_in:
+            with open(destination, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        print(f"Extracted to '{destination}'")
+
     def execute_unskip(self, statement: Unskip):
         self.runner.unskip()
 
@@ -904,6 +934,7 @@ class SQLLogicContext:
         self.runner.database = SQLLogicDatabase(path, self)
         self.pool = self.runner.database.connect()
         con = self.pool.get_connection()
+
         for setting in old_settings:
             name, value = setting
             if name in [
@@ -913,23 +944,34 @@ class SQLLogicContext:
                 'allow_unredacted_secrets',
                 'duckdb_api',
             ]:
-                # Can not be set after initialization
+                # Cannot be set after initialization
                 continue
-            if name in ['profiling_mode', 'enable_profiling']:
-                # FIXME: 'profiling_mode' becomes "standard" when requested, but that's not actually the default setting
+
+            # If enable_profiling is NULL, skip setting custom_profiling_settings to not
+            # accidentally enable profiling.
+            # In that case, custom_profiling_settings is set to the default value anyway.
+            if name == "custom_profiling_settings" and "enable_profiling" not in old_settings:
                 continue
-            query = f"set {name}='{value}'"
+
+            query = f"SET {name}='{value}'"
             con.execute(query)
 
     def execute_set(self, statement: Set):
         option = statement.header.parameters[0]
-        string_set = (
-            self.runner.ignore_error_messages
-            if option == "ignore_error_messages"
-            else self.runner.always_fail_error_messages
-        )
-        string_set.clear()
-        string_set = statement.error_messages
+        if option == 'ignore_error_messages':
+            string_set = (
+                self.runner.ignore_error_messages
+                if option == "ignore_error_messages"
+                else self.runner.always_fail_error_messages
+            )
+            string_set.clear()
+            string_set = statement.error_messages
+        elif option == 'seed':
+            con = self.get_connection()
+            con.execute(f"SELECT SETSEED({statement.header.parameters[1]})")
+            self.runner.skip_reload = True
+        else:
+            self.skiptest(f"SET '{option}' is not implemented!")
 
     def execute_hash_threshold(self, statement: HashThreshold):
         self.runner.hash_threshold = statement.threshold
@@ -978,6 +1020,9 @@ class SQLLogicContext:
     def execute_statement(self, statement: Statement):
         assert isinstance(statement, Statement)
         conn = self.get_connection(statement.connection_name)
+        if not has_external_access(conn):
+            self.skiptest("enable_external_access is explicitly disabled by the test")
+
         sql_query = '\n'.join(statement.lines)
         sql_query = self.replace_keywords(sql_query)
 
@@ -1057,6 +1102,15 @@ class SQLLogicContext:
         if param == "no_extension_autoloading":
             if autoload_known_extensions:
                 # If autoloading is on, we skip this test
+                return RequireResult.MISSING
+            return RequireResult.PRESENT
+
+        allow_unsigned_extensions = connection.execute(
+            "select value::BOOLEAN from duckdb_settings() where name == 'allow_unsigned_extensions'"
+        ).fetchone()[0]
+        if param == "allow_unsigned_extensions":
+            if allow_unsigned_extensions == False:
+                # If extension validation is turned on (that is allow_unsigned_extensions=False), skip test
                 return RequireResult.MISSING
             return RequireResult.PRESENT
 

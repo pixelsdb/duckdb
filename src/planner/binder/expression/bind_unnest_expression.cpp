@@ -14,6 +14,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 
 namespace duckdb {
 
@@ -21,12 +22,12 @@ unique_ptr<Expression> CreateBoundStructExtract(ClientContext &context, unique_p
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(expr));
 	arguments.push_back(make_uniq<BoundConstantExpression>(Value(key)));
-	auto extract_function = StructExtractFun::KeyExtractFunction();
+	auto extract_function = GetKeyExtractFunction();
 	auto bind_info = extract_function.bind(context, extract_function, arguments);
 	auto return_type = extract_function.return_type;
 	auto result = make_uniq<BoundFunctionExpression>(return_type, std::move(extract_function), std::move(arguments),
 	                                                 std::move(bind_info));
-	result->alias = std::move(key);
+	result->SetAlias(std::move(key));
 	return std::move(result);
 }
 
@@ -34,12 +35,12 @@ unique_ptr<Expression> CreateBoundStructExtractIndex(ClientContext &context, uni
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(expr));
 	arguments.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(int64_t(key))));
-	auto extract_function = StructExtractFun::IndexExtractFunction();
+	auto extract_function = GetIndexExtractFunction();
 	auto bind_info = extract_function.bind(context, extract_function, arguments);
 	auto return_type = extract_function.return_type;
 	auto result = make_uniq<BoundFunctionExpression>(return_type, std::move(extract_function), std::move(arguments),
 	                                                 std::move(bind_info));
-	result->alias = "element" + to_string(key);
+	result->SetAlias("element" + to_string(key));
 	return std::move(result);
 }
 
@@ -89,7 +90,7 @@ BindResult SelectBinder::BindUnnest(FunctionExpression &function, idx_t depth, b
 			if (!function.children[i]->IsScalar()) {
 				break;
 			}
-			auto alias = StringUtil::Lower(function.children[i]->alias);
+			auto alias = StringUtil::Lower(function.children[i]->GetAlias());
 			BindChild(function.children[i], depth, error);
 			if (error.HasError()) {
 				return BindResult(std::move(error));
@@ -132,6 +133,7 @@ BindResult SelectBinder::BindUnnest(FunctionExpression &function, idx_t depth, b
 		ExtractCorrelatedExpressions(binder, *bound_expr);
 	}
 	auto &child = BoundExpression::GetExpression(*function.children[0]);
+	child = BoundCastExpression::AddArrayCastToList(context, std::move(child));
 	auto &child_type = child->return_type;
 	unnest_level--;
 
@@ -149,7 +151,8 @@ BindResult SelectBinder::BindUnnest(FunctionExpression &function, idx_t depth, b
 	case LogicalTypeId::SQLNULL:
 		break;
 	default:
-		return BindResult(BinderException(function, "UNNEST() can only be applied to lists, structs and NULL"));
+		return BindResult(BinderException(function, "UNNEST() can only be applied to lists, structs and NULL, not %s",
+		                                  child_type.ToString()));
 	}
 
 	idx_t list_unnests;
@@ -187,7 +190,7 @@ BindResult SelectBinder::BindUnnest(FunctionExpression &function, idx_t depth, b
 		}
 		auto result = make_uniq<BoundUnnestExpression>(return_type);
 		result->child = std::move(unnest_expr);
-		auto alias = function.alias.empty() ? result->ToString() : function.alias;
+		auto alias = function.GetAlias().empty() ? result->ToString() : function.GetAlias();
 
 		auto current_level = unnest_level + list_unnests - current_depth - 1;
 		auto entry = node.unnests.find(current_level);

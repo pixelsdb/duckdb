@@ -41,7 +41,21 @@ void RetrieveMetrics(duckdb_profiling_info info, duckdb::map<string, double> &cu
 		auto key_str = duckdb::string(key_c_str);
 		auto value_str = duckdb::string(value_c_str);
 
+		if (depth == 0) {
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::OPERATOR_CARDINALITY));
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::OPERATOR_ROWS_SCANNED));
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::OPERATOR_TIMING));
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::OPERATOR_NAME));
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::OPERATOR_TYPE));
+		} else {
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::QUERY_NAME));
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::BLOCKED_THREAD_TIME));
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::LATENCY));
+			REQUIRE(key_str != EnumUtil::ToString(MetricsType::ROWS_RETURNED));
+		}
+
 		if (key_str == EnumUtil::ToString(MetricsType::QUERY_NAME) ||
+		    key_str == EnumUtil::ToString(MetricsType::OPERATOR_NAME) ||
 		    key_str == EnumUtil::ToString(MetricsType::OPERATOR_TYPE) ||
 		    key_str == EnumUtil::ToString(MetricsType::EXTRA_INFO)) {
 			REQUIRE(!value_str.empty());
@@ -218,5 +232,36 @@ TEST_CASE("Test invalid use of profiling API", "[capi]") {
 
 	duckdb_destroy_value(&dummy_value);
 	duckdb_destroy_value(&map);
+	tester.Cleanup();
+}
+
+TEST_CASE("Test profiling after throwing an error", "[capi]") {
+	CAPITester tester;
+	auto main_db = TestCreatePath("profiling_error.db");
+	REQUIRE(tester.OpenDatabase(main_db.c_str()));
+
+	auto path = TestCreatePath("profiling_error.db");
+	REQUIRE_NO_FAIL(tester.Query("ATTACH IF NOT EXISTS '" + path + "' (TYPE DUCKDB)"));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE profiling_error.tbl AS SELECT range AS id FROM range(10)"));
+
+	REQUIRE_NO_FAIL(tester.Query("SET enable_profiling = 'no_output'"));
+	REQUIRE_NO_FAIL(tester.Query("SET profiling_mode = 'standard'"));
+
+	CAPIPrepared prepared_q1;
+	CAPIPending pending_q1;
+	REQUIRE(prepared_q1.Prepare(tester, "SELECT * FROM profiling_error.tbl"));
+	REQUIRE(pending_q1.Pending(prepared_q1));
+	auto result = pending_q1.Execute();
+	REQUIRE(result);
+	REQUIRE(!result->HasError());
+
+	auto info = duckdb_get_profiling_info(tester.connection);
+	REQUIRE(info != nullptr);
+
+	CAPIPrepared prepared_q2;
+	REQUIRE(!prepared_q2.Prepare(tester, "SELECT * FROM profiling_error.does_not_exist"));
+	info = duckdb_get_profiling_info(tester.connection);
+	REQUIRE(info == nullptr);
+
 	tester.Cleanup();
 }

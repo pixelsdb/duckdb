@@ -11,6 +11,7 @@
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/transaction/undo_buffer.hpp"
 
 namespace duckdb {
 class CheckpointLock;
@@ -39,6 +40,11 @@ public:
 
 	atomic<idx_t> catalog_version;
 
+	//! Transactions undergo Cleanup, after (1) removing them directly in RemoveTransaction,
+	//! or (2) after they exist old_transactions.
+	//! Some (after rollback) enter old_transactions, but do not require Cleanup.
+	bool awaiting_cleanup;
+
 public:
 	static DuckTransaction &Get(ClientContext &context, AttachedDatabase &db);
 	static DuckTransaction &Get(ClientContext &context, Catalog &catalog);
@@ -58,7 +64,7 @@ public:
 	bool AutomaticCheckpoint(AttachedDatabase &db, const UndoBufferProperties &properties);
 
 	//! Rollback
-	void Rollback() noexcept;
+	ErrorData Rollback();
 	//! Cleanup the undo buffer
 	void Cleanup(transaction_t lowest_active_transaction);
 
@@ -69,7 +75,7 @@ public:
 	                idx_t base_row);
 	void PushSequenceUsage(SequenceCatalogEntry &entry, const SequenceData &data);
 	void PushAppend(DataTable &table, idx_t row_start, idx_t row_count);
-	UpdateInfo *CreateUpdateInfo(idx_t type_size, idx_t entries);
+	UndoBufferReference CreateUpdateInfo(idx_t type_size, idx_t entries);
 
 	bool IsDuckTransaction() const override {
 		return true;
@@ -80,10 +86,10 @@ public:
 		return write_lock.get();
 	}
 
-	void UpdateCollection(shared_ptr<RowGroupCollection> &collection);
-
 	//! Get a shared lock on a table
 	shared_ptr<CheckpointLock> SharedLockTable(DataTableInfo &info);
+
+	void ModifyTable(DataTable &tbl);
 
 private:
 	DuckTransactionManager &transaction_manager;
@@ -98,12 +104,18 @@ private:
 	mutex sequence_lock;
 	//! Map of all sequences that were used during the transaction and the value they had in this transaction
 	reference_map_t<SequenceCatalogEntry, reference<SequenceValue>> sequence_usage;
-	//! Collections that are updated by this transaction
-	reference_map_t<RowGroupCollection, shared_ptr<RowGroupCollection>> updated_collections;
+	//! Lock for modified_tables
+	mutex modified_tables_lock;
+	//! Tables that are modified by this transaction
+	reference_map_t<DataTable, shared_ptr<DataTable>> modified_tables;
 	//! Lock for the active_locks map
 	mutex active_locks_lock;
+	struct ActiveTableLock {
+		mutex checkpoint_lock_mutex; // protects access to the checkpoint_lock field in this class
+		weak_ptr<CheckpointLock> checkpoint_lock;
+	};
 	//! Active locks on tables
-	reference_map_t<DataTableInfo, weak_ptr<CheckpointLock>> active_locks;
+	reference_map_t<DataTableInfo, unique_ptr<ActiveTableLock>> active_locks;
 };
 
 } // namespace duckdb

@@ -32,10 +32,29 @@ void BoundIndex::InitializeLock(IndexLock &state) {
 	state.index_lock = unique_lock<mutex>(lock);
 }
 
-ErrorData BoundIndex::Append(DataChunk &entries, Vector &row_identifiers) {
-	IndexLock state;
-	InitializeLock(state);
-	return Append(state, entries, row_identifiers);
+ErrorData BoundIndex::Append(DataChunk &chunk, Vector &row_ids) {
+	IndexLock l;
+	InitializeLock(l);
+	return Append(l, chunk, row_ids);
+}
+
+ErrorData BoundIndex::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
+	// Fallback to the old Append.
+	return Append(l, chunk, row_ids);
+}
+
+ErrorData BoundIndex::Append(DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
+	IndexLock l;
+	InitializeLock(l);
+	return Append(l, chunk, row_ids, info);
+}
+
+void BoundIndex::VerifyAppend(DataChunk &chunk, IndexAppendInfo &info, optional_ptr<ConflictManager> manager) {
+	throw NotImplementedException("this implementation of VerifyAppend does not exist.");
+}
+
+void BoundIndex::VerifyConstraint(DataChunk &chunk, IndexAppendInfo &info, ConflictManager &manager) {
+	throw NotImplementedException("this implementation of VerifyConstraint does not exist.");
 }
 
 void BoundIndex::CommitDrop() {
@@ -50,6 +69,10 @@ void BoundIndex::Delete(DataChunk &entries, Vector &row_identifiers) {
 	Delete(state, entries, row_identifiers);
 }
 
+ErrorData BoundIndex::Insert(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
+	throw NotImplementedException("this implementation of Insert does not exist.");
+}
+
 bool BoundIndex::MergeIndexes(BoundIndex &other_index) {
 	IndexLock state;
 	InitializeLock(state);
@@ -57,15 +80,25 @@ bool BoundIndex::MergeIndexes(BoundIndex &other_index) {
 }
 
 string BoundIndex::VerifyAndToString(const bool only_verify) {
-	IndexLock state;
-	InitializeLock(state);
-	return VerifyAndToString(state, only_verify);
+	IndexLock l;
+	InitializeLock(l);
+	return VerifyAndToString(l, only_verify);
 }
 
 void BoundIndex::VerifyAllocations() {
-	IndexLock state;
-	InitializeLock(state);
-	return VerifyAllocations(state);
+	IndexLock l;
+	InitializeLock(l);
+	return VerifyAllocations(l);
+}
+
+void BoundIndex::VerifyBuffers(IndexLock &l) {
+	throw NotImplementedException("this implementation of VerifyBuffers does not exist");
+}
+
+void BoundIndex::VerifyBuffers() {
+	IndexLock l;
+	InitializeLock(l);
+	return VerifyBuffers(l);
 }
 
 void BoundIndex::Vacuum() {
@@ -84,14 +117,13 @@ void BoundIndex::ExecuteExpressions(DataChunk &input, DataChunk &result) {
 	executor.Execute(input, result);
 }
 
-unique_ptr<Expression> BoundIndex::BindExpression(unique_ptr<Expression> expr) {
-	if (expr->type == ExpressionType::BOUND_COLUMN_REF) {
-		auto &bound_colref = expr->Cast<BoundColumnRefExpression>();
-		return make_uniq<BoundReferenceExpression>(expr->return_type, column_ids[bound_colref.binding.column_index]);
-	}
-	ExpressionIterator::EnumerateChildren(
-	    *expr, [this](unique_ptr<Expression> &expr) { expr = BindExpression(std::move(expr)); });
-	return expr;
+unique_ptr<Expression> BoundIndex::BindExpression(unique_ptr<Expression> root_expr) {
+	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
+	    root_expr, [&](BoundColumnRefExpression &bound_colref, unique_ptr<Expression> &expr) {
+		    expr =
+		        make_uniq<BoundReferenceExpression>(expr->return_type, column_ids[bound_colref.binding.column_index]);
+	    });
+	return root_expr;
 }
 
 bool BoundIndex::IndexIsUpdated(const vector<PhysicalIndex> &column_ids_p) const {
@@ -103,8 +135,12 @@ bool BoundIndex::IndexIsUpdated(const vector<PhysicalIndex> &column_ids_p) const
 	return false;
 }
 
-IndexStorageInfo BoundIndex::GetStorageInfo(const case_insensitive_map_t<Value> &options, const bool to_wal) {
-	throw NotImplementedException("The implementation of this index serialization does not exist.");
+IndexStorageInfo BoundIndex::SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) {
+	throw NotImplementedException("The implementation of this index disk serialization does not exist.");
+}
+
+IndexStorageInfo BoundIndex::SerializeToWAL(const case_insensitive_map_t<Value> &options) {
+	throw NotImplementedException("The implementation of this index WAL serialization does not exist.");
 }
 
 string BoundIndex::AppendRowError(DataChunk &input, idx_t index) {

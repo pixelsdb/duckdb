@@ -1,10 +1,3 @@
-//===----------------------------------------------------------------------===//
-//                         DuckDB
-//
-// duckdb/common/types/row_operations/row_external.cpp
-//
-//
-//===----------------------------------------------------------------------===//
 #include "duckdb/common/row_operations/row_operations.hpp"
 #include "duckdb/common/types/row/row_layout.hpp"
 
@@ -107,7 +100,7 @@ static inline void VerifyUnswizzledString(const RowLayout &layout, const idx_t &
 	idx_t idx_in_entry;
 	ValidityBytes::GetEntryIndex(col_idx, entry_idx, idx_in_entry);
 
-	ValidityBytes row_mask(row_ptr);
+	ValidityBytes row_mask(row_ptr, layout.ColumnCount());
 	if (row_mask.RowIsValid(row_mask.GetValidityEntry(entry_idx), idx_in_entry)) {
 		auto str = Load<string_t>(row_ptr + layout.GetOffsets()[col_idx]);
 		str.Verify();

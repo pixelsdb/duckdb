@@ -263,7 +263,7 @@ static void gen_tbl(ClientContext &context, int tnum, DSS_HUGE count, tpch_appen
 
 	for (DSS_HUGE i = offset + 1; count; count--, i++) {
 		if (count % 1000 == 0 && context.interrupted) {
-			throw InterruptException();
+			return;
 		}
 		row_start(tnum, dbgen_ctx);
 		switch (tnum) {
@@ -503,6 +503,9 @@ public:
 		for (size_t i = PART; i <= REGION; i++) {
 			if (parameters.tables[i]) {
 				auto &tbl_catalog = *parameters.tables[i];
+				if (!tbl_catalog.IsDuckTable()) {
+					throw InvalidInputException("dbgen is only supported for DuckDB database files");
+				}
 				append_info[i].appender = make_uniq<InternalAppender>(context, tbl_catalog, flush_count);
 			}
 		}
@@ -521,6 +524,9 @@ public:
 					rowcnt = dbgen_ctx.tdefs[i].base * dbgen_ctx.scale_factor;
 				} else {
 					rowcnt = dbgen_ctx.tdefs[i].base;
+				}
+				if (context.interrupted) {
+					return;
 				}
 				if (children > 1 && current_step != -1) {
 					size_t part_size = std::ceil((double)rowcnt / (double)children);
@@ -659,15 +665,23 @@ void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, string
 				threads.emplace_back(ParallelTPCHAppend, &new_appenders[thr_idx], child_count, step);
 				step++;
 			}
-			// flush the previous batch of appenders while waiting (if any are there)
-			// now flush the appenders in-order
-			for(auto &appender : finished_appenders) {
-				appender.Flush();
+			ErrorData error;
+			try {
+				// flush the previous batch of appenders while waiting (if any are there)
+				// now flush the appenders in-order
+				for(auto &appender : finished_appenders) {
+					appender.Flush();
+				}
+			} catch(std::exception &ex) {
+				error = ErrorData(ex);
 			}
 			finished_appenders.clear();
 			// wait for all threads to finish
 			for(auto &thread : threads) {
 				thread.join();
+			}
+			if (error.HasError()) {
+				error.Throw();
 			}
 			finished_appenders = std::move(new_appenders);
 		}

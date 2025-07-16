@@ -26,15 +26,50 @@ DataChunk::~DataChunk() {
 }
 
 void DataChunk::InitializeEmpty(const vector<LogicalType> &types) {
-	InitializeEmpty(types.begin(), types.end());
-}
-
-void DataChunk::Initialize(Allocator &allocator, const vector<LogicalType> &types, idx_t capacity_p) {
-	Initialize(allocator, types.begin(), types.end(), capacity_p);
+	D_ASSERT(data.empty());
+	capacity = STANDARD_VECTOR_SIZE;
+	for (idx_t i = 0; i < types.size(); i++) {
+		data.emplace_back(types[i], nullptr);
+	}
 }
 
 void DataChunk::Initialize(ClientContext &context, const vector<LogicalType> &types, idx_t capacity_p) {
 	Initialize(Allocator::Get(context), types, capacity_p);
+}
+
+void DataChunk::Initialize(Allocator &allocator, const vector<LogicalType> &types, idx_t capacity_p) {
+	auto initialize = vector<bool>(types.size(), true);
+	Initialize(allocator, types, initialize, capacity_p);
+}
+
+void DataChunk::Initialize(ClientContext &context, const vector<LogicalType> &types, const vector<bool> &initialize,
+                           idx_t capacity_p) {
+	Initialize(Allocator::Get(context), types, initialize, capacity_p);
+}
+
+void DataChunk::Initialize(Allocator &allocator, const vector<LogicalType> &types, const vector<bool> &initialize,
+                           idx_t capacity_p) {
+	D_ASSERT(types.size() == initialize.size());
+	D_ASSERT(data.empty());
+
+	capacity = capacity_p;
+	for (idx_t i = 0; i < types.size(); i++) {
+		// We copy the type here so we don't create another reference to the same shared_ptr<ExtraTypeInfo>
+		// Otherwise, threads will constantly increment/decrement the atomic ref count to the same shared_ptr
+		// This is necessary to avoid heavy contention on the atomic on many-core machines
+		// Note that for nested types, there will still be contention on the atomic(s) one level down,
+		// because this is a shallow copy (only copies ExtraTypeInfo to depth=1)
+		auto copied_type = types[i].Copy();
+		if (!initialize[i]) {
+			data.emplace_back(copied_type, nullptr);
+			vector_caches.emplace_back();
+			continue;
+		}
+
+		VectorCache cache(allocator, copied_type, capacity);
+		data.emplace_back(cache);
+		vector_caches.push_back(std::move(cache));
+	}
 }
 
 idx_t DataChunk::GetAllocationSize() const {
@@ -46,33 +81,8 @@ idx_t DataChunk::GetAllocationSize() const {
 	return total_size;
 }
 
-void DataChunk::Initialize(Allocator &allocator, vector<LogicalType>::const_iterator begin,
-                           vector<LogicalType>::const_iterator end, idx_t capacity_p) {
-	D_ASSERT(data.empty());                   // can only be initialized once
-	D_ASSERT(std::distance(begin, end) != 0); // empty chunk not allowed
-	capacity = capacity_p;
-	for (; begin != end; begin++) {
-		VectorCache cache(allocator, *begin, capacity);
-		data.emplace_back(cache);
-		vector_caches.push_back(std::move(cache));
-	}
-}
-
-void DataChunk::Initialize(ClientContext &context, vector<LogicalType>::const_iterator begin,
-                           vector<LogicalType>::const_iterator end, idx_t capacity_p) {
-	Initialize(Allocator::Get(context), begin, end, capacity_p);
-}
-
-void DataChunk::InitializeEmpty(vector<LogicalType>::const_iterator begin, vector<LogicalType>::const_iterator end) {
-	capacity = STANDARD_VECTOR_SIZE;
-	D_ASSERT(data.empty());                   // can only be initialized once
-	D_ASSERT(std::distance(begin, end) != 0); // empty chunk not allowed
-	for (; begin != end; begin++) {
-		data.emplace_back(*begin, nullptr);
-	}
-}
-
 void DataChunk::Reset() {
+	SetCardinality(0);
 	if (data.empty() || vector_caches.empty()) {
 		return;
 	}
@@ -83,7 +93,6 @@ void DataChunk::Reset() {
 		data[i].ResetFromCache(vector_caches[i]);
 	}
 	capacity = STANDARD_VECTOR_SIZE;
-	SetCardinality(0);
 }
 
 void DataChunk::Destroy() {
@@ -243,7 +252,7 @@ string DataChunk::ToString() const {
 	return retval;
 }
 
-void DataChunk::Serialize(Serializer &serializer) const {
+void DataChunk::Serialize(Serializer &serializer, bool compressed_serialization) const {
 
 	// write the count
 	auto row_count = size();
@@ -263,7 +272,7 @@ void DataChunk::Serialize(Serializer &serializer) const {
 			// Reference the vector to avoid potentially mutating it during serialization
 			Vector serialized_vector(data[i].GetType());
 			serialized_vector.Reference(data[i]);
-			serialized_vector.Serialize(object, row_count);
+			serialized_vector.Serialize(object, row_count, compressed_serialization);
 		});
 	});
 }
@@ -366,7 +375,8 @@ void DataChunk::Verify() {
 	}
 
 	// verify that we can round-trip chunk serialization
-	MemoryStream mem_stream;
+	Allocator allocator;
+	MemoryStream mem_stream(allocator);
 	BinarySerializer serializer(mem_stream);
 
 	serializer.Begin();

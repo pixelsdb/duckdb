@@ -2,6 +2,8 @@
 # description: Base tests for the autoloading mechanism for extensions
 # group: [extension]
 
+require httpfs
+
 # This test assumes icu and json to be available in the LOCAL_EXTENSION_REPO and NOT linked into duckdb statically
 # -> this should be the case for our autoloading tests where we have the local_extension_repo variable set
 require-env LOCAL_EXTENSION_REPO
@@ -9,6 +11,17 @@ require-env LOCAL_EXTENSION_REPO
 # Ensure we have a clean extension directory without any preinstalled extensions
 statement ok
 set extension_directory='__TEST_DIR__/autoloading_base'
+
+query I
+SELECT (count(*) > 0) FROM duckdb_extensions() WHERE install_path ILIKE '%duckdb_extension'
+----
+false
+
+# All extensions reported by duckdb are either statically linked or not installed
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE install_mode != 'NOT_INSTALLED' AND install_mode != 'STATICALLY_LINKED'
+----
+0
 
 ### No autoloading nor installing: throw error with installation hint
 statement ok
@@ -48,13 +61,13 @@ statement error
 SET s3_region='eu-west-1';
 ----
 Extension Autoloading Error: An error occurred while trying to automatically install the required extension 'httpfs':
-Failed to copy local extension
+Failed to install local extension
 
 statement error
 select * from read_json_auto('data/json/example_n.ndjson');
 ----
 Extension Autoloading Error: An error occurred while trying to automatically install the required extension 'json':
-Failed to copy local extension
+Failed to install local extension
 
 # Now override with non-existent remote repo
 statement ok
@@ -87,3 +100,8 @@ SET s3_region='eu-west-1';
 
 statement ok
 select * from read_json_auto('data/json/example_n.ndjson');
+
+query I
+SELECT (count(*) > 0) FROM duckdb_extensions() WHERE install_path ILIKE '%duckdb_extension';
+----
+true

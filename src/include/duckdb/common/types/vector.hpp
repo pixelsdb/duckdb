@@ -127,7 +127,7 @@ public:
 	//! Create a non-owning vector that references the specified data
 	DUCKDB_API Vector(LogicalType type, data_ptr_t dataptr);
 	//! Create a non-owning vector that references the specified data with ValidityMask
-	DUCKDB_API explicit Vector(LogicalType type_p, data_ptr_t dataptr, validity_t * validity_mask);
+	DUCKDB_API explicit Vector(LogicalType type_p, data_ptr_t dataptr, validity_t * validity_mask,idx_t capacity);
 	//! Create an owning vector that holds at most STANDARD_VECTOR_SIZE entries.
 	/*!
 	    Create a new vector

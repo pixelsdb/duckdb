@@ -73,9 +73,9 @@ Vector::Vector(LogicalType type_p, data_ptr_t dataptr)
 	}
 }
 
-Vector::Vector(LogicalType type_p, data_ptr_t dataptr, validity_t * validity_mask)
+Vector::Vector(LogicalType type_p, data_ptr_t dataptr, validity_t * validity_mask,idx_t capacity)
         : vector_type(VectorType::FLAT_VECTOR), type(std::move(type_p)), data(dataptr),
-            validity(validity_mask) {
+            validity(ValidityMask(validity_mask,capacity)) {
     if (dataptr && !type.IsValid()) {
         throw InternalException("Cannot create a vector of type INVALID!");
     }

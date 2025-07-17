@@ -10,7 +10,7 @@
 #include "duckdb/common/string_util.hpp"
 
 #include <algorithm>
-
+#include <regex>
 namespace duckdb {
 
 MultiFilePushdownInfo::MultiFilePushdownInfo(LogicalGet &get)
@@ -284,6 +284,30 @@ unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext
 	// FIXME: lazy expansion
 	// FIXME: push down filters into glob
 	while (ExpandNextPath()) {
+	}
+	// Added: Smart sorting based on /hits/hits_xx pattern
+	if (!expanded_files.empty()) {
+		// Check if all paths match the /hits/hits_xx.parquet pattern
+		bool allMatchHitsFormat = std::all_of(expanded_files.begin(), expanded_files.end(),
+			[](const OpenFileInfo& info) {
+				static const std::regex pattern(R"(/hits/hits_[^/]+\.parquet$)");
+				return std::regex_search(info.path, pattern);
+			});
+
+		if (allMatchHitsFormat) {
+			// Sort by the part after hits_
+			std::sort(expanded_files.begin(), expanded_files.end(),
+				[](const OpenFileInfo& a, const OpenFileInfo& b) {
+					static const std::regex pattern(R"(/hits/hits_([^/]+)\.parquet$)");
+					std::smatch matchA, matchB;
+
+					if (std::regex_search(a.path, matchA, pattern) && matchA.size() > 1 &&
+						std::regex_search(b.path, matchB, pattern) && matchB.size() > 1) {
+						return matchA[1].str() < matchB[1].str(); // Sort by the suffix after hits_
+					}
+					return a.path < b.path; // Safe fallback
+				});
+		}
 	}
 
 	if (!options.hive_partitioning && !options.filename) {

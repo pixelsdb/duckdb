@@ -139,58 +139,79 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 		LogLine(error_data.Message());
 		return;
 	}
-	auto nruns = benchmark->NRuns();
+	// auto nruns = benchmark->NRuns();
+	auto nruns=1;
 	LogLine("NRuns: "+std::to_string(nruns)+"\n");
-	for (size_t i = 0; i < nruns; i++) {
-		bool hotrun = i >= 0;
-		if (hotrun) {
-			Log(StringUtil::Format("%s\t%d\t", benchmark->name, i));
-		}
-		if (hotrun && benchmark->RequireReinit()) {
-			state = benchmark->Initialize(configuration);
-		}
-		is_active = true;
-		timeout = false;
-		std::thread interrupt_thread(sleep_thread, benchmark, this, state.get(), hotrun,
-		                             benchmark->Timeout(configuration));
+	string error;
 
-		string error;
-		try {
-			profiler.Start();
-			benchmark->Run(state.get());
-			profiler.End();
-		} catch (std::exception &ex) {
-			duckdb::ErrorData error_data(ex);
-			error = error_data.Message();
-		}
-
-		is_active = false;
-		interrupt_thread.join();
-		if (hotrun) {
-			LogOutput(benchmark->GetLogOutput(state.get()));
-			if (!error.empty()) {
-				LogResult("ERROR");
-				LogLine(error);
-				break;
-			} else if (timeout) {
-				LogResult("TIMEOUT");
-				break;
-			} else {
-				// write time
-				auto verify = benchmark->Verify(state.get());
-				if (!verify.empty()) {
-					LogResult("INCORRECT");
-					LogLine("INCORRECT RESULT: " + verify);
-					LogOutput("INCORRECT RESULT: " + verify);
-					LogSummary(benchmark->name, "INCORRECT RESULT: " + verify, i);
-					break;
-				} else {
-					LogResult("Result: "+std::to_string(profiler.Elapsed()));
-				}
-			}
-		}
-		benchmark->Cleanup(state.get());
+	try {
+		profiler.Start();
+		benchmark->Run(state.get());
+		profiler.End();
+	} catch (std::exception &ex) {
+		duckdb::ErrorData error_data(ex);
+		error = error_data.Message();
 	}
+	auto verify = benchmark->Verify(state.get());
+	if (!verify.empty()) {
+		LogResult("INCORRECT");
+		LogLine("INCORRECT RESULT: " + verify);
+		LogOutput("INCORRECT RESULT: " + verify);
+		LogSummary(benchmark->name, "INCORRECT RESULT: " + verify, 0);
+		// break;
+	} else {
+		LogResult("Result: "+std::to_string(profiler.Elapsed()));
+	}
+	// for (size_t i = 0; i < nruns; i++) {
+	// 	bool hotrun = i >= 0;
+	// 	if (hotrun) {
+	// 		Log(StringUtil::Format("%s\t%d\t", benchmark->name, i));
+	// 	}
+	// 	if (hotrun && benchmark->RequireReinit()) {
+	// 		state = benchmark->Initialize(configuration);
+	// 	}
+	// 	is_active = true;
+	// 	timeout = false;
+	// 	std::thread interrupt_thread(sleep_thread, benchmark, this, state.get(), hotrun,
+	// 	                             benchmark->Timeout(configuration));
+	//
+	// 	string error;
+	// 	try {
+	// 		profiler.Start();
+	// 		benchmark->Run(state.get());
+	// 		profiler.End();
+	// 	} catch (std::exception &ex) {
+	// 		duckdb::ErrorData error_data(ex);
+	// 		error = error_data.Message();
+	// 	}
+	//
+	// 	is_active = false;
+	// 	interrupt_thread.join();
+	// 	if (hotrun) {
+	// 		LogOutput(benchmark->GetLogOutput(state.get()));
+	// 		if (!error.empty()) {
+	// 			LogResult("ERROR");
+	// 			LogLine(error);
+	// 			break;
+	// 		} else if (timeout) {
+	// 			LogResult("TIMEOUT");
+	// 			break;
+	// 		} else {
+	// 			// write time
+	// 			auto verify = benchmark->Verify(state.get());
+	// 			if (!verify.empty()) {
+	// 				LogResult("INCORRECT");
+	// 				LogLine("INCORRECT RESULT: " + verify);
+	// 				LogOutput("INCORRECT RESULT: " + verify);
+	// 				LogSummary(benchmark->name, "INCORRECT RESULT: " + verify, i);
+	// 				break;
+	// 			} else {
+	// 				LogResult("Result: "+std::to_string(profiler.Elapsed()));
+	// 			}
+	// 		}
+	// 	}
+	// 	benchmark->Cleanup(state.get());
+	// }
 	benchmark->Finalize();
 }
 

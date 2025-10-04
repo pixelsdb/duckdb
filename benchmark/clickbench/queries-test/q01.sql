@@ -1,1 +1,1 @@
-SELECT * FROM hits;
+SELECT watchid FROM hits;

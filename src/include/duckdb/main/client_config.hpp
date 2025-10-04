@@ -70,6 +70,7 @@ struct ClientConfig {
 	//! Whether or not we should verify the serializer
 	bool verify_serializer = false;
 	//! Enable the running of optimizers
+	// We change it to false for testing, Notice!!!
 	bool enable_optimizer = true;
 	//! Enable caching operators
 	bool enable_caching_operators = true;

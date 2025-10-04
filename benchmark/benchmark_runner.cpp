@@ -140,78 +140,78 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 		return;
 	}
 	// auto nruns = benchmark->NRuns();
-	auto nruns=1;
+	auto nruns=nRuns;
 	LogLine("NRuns: "+std::to_string(nruns)+"\n");
 	string error;
 
-	try {
-		profiler.Start();
-		benchmark->Run(state.get());
-		profiler.End();
-	} catch (std::exception &ex) {
-		duckdb::ErrorData error_data(ex);
-		error = error_data.Message();
-	}
-	auto verify = benchmark->Verify(state.get());
-	if (!verify.empty()) {
-		LogResult("INCORRECT");
-		LogLine("INCORRECT RESULT: " + verify);
-		LogOutput("INCORRECT RESULT: " + verify);
-		LogSummary(benchmark->name, "INCORRECT RESULT: " + verify, 0);
-		// break;
-	} else {
-		LogResult("Result: "+std::to_string(profiler.Elapsed()));
-	}
-	// for (size_t i = 0; i < nruns; i++) {
-	// 	bool hotrun = i >= 0;
-	// 	if (hotrun) {
-	// 		Log(StringUtil::Format("%s\t%d\t", benchmark->name, i));
-	// 	}
-	// 	if (hotrun && benchmark->RequireReinit()) {
-	// 		state = benchmark->Initialize(configuration);
-	// 	}
-	// 	is_active = true;
-	// 	timeout = false;
-	// 	std::thread interrupt_thread(sleep_thread, benchmark, this, state.get(), hotrun,
-	// 	                             benchmark->Timeout(configuration));
-	//
-	// 	string error;
-	// 	try {
-	// 		profiler.Start();
-	// 		benchmark->Run(state.get());
-	// 		profiler.End();
-	// 	} catch (std::exception &ex) {
-	// 		duckdb::ErrorData error_data(ex);
-	// 		error = error_data.Message();
-	// 	}
-	//
-	// 	is_active = false;
-	// 	interrupt_thread.join();
-	// 	if (hotrun) {
-	// 		LogOutput(benchmark->GetLogOutput(state.get()));
-	// 		if (!error.empty()) {
-	// 			LogResult("ERROR");
-	// 			LogLine(error);
-	// 			break;
-	// 		} else if (timeout) {
-	// 			LogResult("TIMEOUT");
-	// 			break;
-	// 		} else {
-	// 			// write time
-	// 			auto verify = benchmark->Verify(state.get());
-	// 			if (!verify.empty()) {
-	// 				LogResult("INCORRECT");
-	// 				LogLine("INCORRECT RESULT: " + verify);
-	// 				LogOutput("INCORRECT RESULT: " + verify);
-	// 				LogSummary(benchmark->name, "INCORRECT RESULT: " + verify, i);
-	// 				break;
-	// 			} else {
-	// 				LogResult("Result: "+std::to_string(profiler.Elapsed()));
-	// 			}
-	// 		}
-	// 	}
-	// 	benchmark->Cleanup(state.get());
+	// try {
+	// 	profiler.Start();
+	// 	benchmark->Run(state.get());
+	// 	profiler.End();
+	// } catch (std::exception &ex) {
+	// 	duckdb::ErrorData error_data(ex);
+	// 	error = error_data.Message();
 	// }
+	// auto verify = benchmark->Verify(state.get());
+	// if (!verify.empty()) {
+	// 	LogResult("INCORRECT");
+	// 	LogLine("INCORRECT RESULT: " + verify);
+	// 	LogOutput("INCORRECT RESULT: " + verify);
+	// 	LogSummary(benchmark->name, "INCORRECT RESULT: " + verify, 0);
+	// 	// break;
+	// } else {
+	// 	LogResult("Result: "+std::to_string(profiler.Elapsed()));
+	// }
+	for (size_t i = 0; i < nruns; i++) {
+		bool hotrun = i >= 0;
+		if (hotrun) {
+			Log(StringUtil::Format("%s\t%d\t", benchmark->name, i));
+		}
+		if (hotrun && benchmark->RequireReinit()) {
+			state = benchmark->Initialize(configuration);
+		}
+		is_active = true;
+		timeout = false;
+		std::thread interrupt_thread(sleep_thread, benchmark, this, state.get(), hotrun,
+		                             benchmark->Timeout(configuration));
+
+		string error;
+		try {
+			profiler.Start();
+			benchmark->Run(state.get());
+			profiler.End();
+		} catch (std::exception &ex) {
+			duckdb::ErrorData error_data(ex);
+			error = error_data.Message();
+		}
+
+		is_active = false;
+		interrupt_thread.join();
+		if (hotrun) {
+			LogOutput(benchmark->GetLogOutput(state.get()));
+			if (!error.empty()) {
+				LogResult("ERROR");
+				LogLine(error);
+				break;
+			} else if (timeout) {
+				LogResult("TIMEOUT");
+				break;
+			} else {
+				// write time
+				auto verify = benchmark->Verify(state.get());
+				if (!verify.empty()) {
+					LogResult("INCORRECT");
+					LogLine("INCORRECT RESULT: " + verify);
+					LogOutput("INCORRECT RESULT: " + verify);
+					LogSummary(benchmark->name, "INCORRECT RESULT: " + verify, i);
+					break;
+				} else {
+					LogResult("\nResult: "+std::to_string(profiler.Elapsed()));
+				}
+			}
+		}
+		benchmark->Cleanup(state.get());
+	}
 	benchmark->Finalize();
 }
 
@@ -230,6 +230,7 @@ void print_help() {
 	fprintf(stderr, "              --detailed-profile     Prints detailed query profile information\n");
 	fprintf(stderr, "              --threads=n            Sets the amount of threads to use during execution (default: "
 	                "hardware concurrency)\n");
+	fprintf(stderr, "				 --Nruns=n				Self-defined,Sets the runtimes for benchmark(parquet:1 pixels:>1)");
 	fprintf(stderr, "              --out=[file]           Move benchmark output to file\n");
 	fprintf(stderr, "              --log=[file]           Move log output to file\n");
 	fprintf(stderr, "              --info                 Prints info about the benchmark\n");
@@ -304,7 +305,12 @@ void parse_arguments(const int arg_counter, char const *const *arg_values) {
 			// write info of benchmark
 			auto splits = StringUtil::Split(arg, '=');
 			instance.threads = Value(splits[1]).DefaultCastAs(LogicalType::UINTEGER).GetValue<uint32_t>();
-		} else if (arg == "--root-dir") {
+		}else if (StringUtil::StartsWith(arg, "--Nruns=")) {
+			// write info of benchmark
+			auto splits = StringUtil::Split(arg, '=');
+			instance.nRuns = Value(splits[1]).DefaultCastAs(LogicalType::UINTEGER).GetValue<uint32_t>();
+		}
+		else if (arg == "--root-dir") {
 			// We've already handled this, skip it
 			arg_index++;
 		} else if (arg == "--query") {

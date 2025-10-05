@@ -13,6 +13,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/catalog/catalog_entry.hpp"
+#include "duckdb/storage/storage_options.hpp"
 
 namespace duckdb {
 class Catalog;
@@ -43,8 +44,10 @@ struct AttachOptions {
 	AccessMode access_mode;
 	//! The file format type. The default type is a duckdb database file, but other file formats are possible.
 	string db_type;
-	//! We only set this, if we detect any unrecognized option.
-	string unrecognized_option;
+	//! Set of remaining (key, value) options
+	unordered_map<string, Value> options;
+	//! (optionally) a catalog can be provided with a default table
+	QualifiedName default_table;
 };
 
 //! The AttachedDatabase represents an attached database instance.
@@ -53,15 +56,15 @@ public:
 	//! Create the built-in system database (without storage).
 	explicit AttachedDatabase(DatabaseInstance &db, AttachedDatabaseType type = AttachedDatabaseType::SYSTEM_DATABASE);
 	//! Create an attached database instance with the specified name and storage.
-	AttachedDatabase(DatabaseInstance &db, Catalog &catalog, string name, string file_path,
-	                 const AttachOptions &options);
+	AttachedDatabase(DatabaseInstance &db, Catalog &catalog, string name, string file_path, AttachOptions &options);
 	//! Create an attached database instance with the specified storage extension.
 	AttachedDatabase(DatabaseInstance &db, Catalog &catalog, StorageExtension &ext, ClientContext &context, string name,
-	                 const AttachInfo &info, const AttachOptions &options);
+	                 AttachInfo &info, AttachOptions &options);
 	~AttachedDatabase() override;
 
 	//! Initializes the catalog and storage of the attached database.
-	void Initialize(const optional_idx block_alloc_size = optional_idx());
+	void Initialize(optional_ptr<ClientContext> context = nullptr, StorageOptions options = StorageOptions());
+	void FinalizeLoad(optional_ptr<ClientContext> context);
 	void Close();
 
 	Catalog &ParentCatalog() override;
@@ -86,6 +89,7 @@ public:
 	bool IsInitialDatabase() const;
 	void SetInitialDatabase();
 	void SetReadOnlyDatabase();
+	void OnDetach(ClientContext &context);
 
 	static bool NameIsReserved(const string &name);
 	static string ExtractDatabaseName(const string &dbpath, FileSystem &fs);

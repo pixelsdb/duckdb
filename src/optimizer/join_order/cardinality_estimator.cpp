@@ -9,6 +9,8 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/storage/data_table.hpp"
 
+#include <math.h>
+
 namespace duckdb {
 
 // The filter was made on top of a logical sample or other projection,
@@ -216,17 +218,16 @@ double CardinalityEstimator::CalculateUpdatedDenom(Subgraph2Denominator left, Su
 	double new_denom = left.denom * right.denom;
 	switch (filter.filter_info->join_type) {
 	case JoinType::INNER: {
-		bool set = false;
-		ExpressionType comparison_type = ExpressionType::COMPARE_EQUAL;
+		// Collect comparison types
+		ExpressionType comparison_type = ExpressionType::INVALID;
 		ExpressionIterator::EnumerateExpression(filter.filter_info->filter, [&](Expression &expr) {
-			if (expr.expression_class == ExpressionClass::BOUND_COMPARISON) {
-				comparison_type = expr.type;
-				set = true;
-				return;
+			if (expr.GetExpressionClass() == ExpressionClass::BOUND_COMPARISON) {
+				comparison_type = expr.GetExpressionType();
 			}
 		});
-		if (!set) {
-			new_denom *= filter.has_tdom_hll ? (double)filter.tdom_hll : (double)filter.tdom_no_hll;
+		if (comparison_type == ExpressionType::INVALID) {
+			new_denom *=
+			    filter.has_tdom_hll ? static_cast<double>(filter.tdom_hll) : static_cast<double>(filter.tdom_no_hll);
 			// no comparison is taking place, so the denominator is just the product of the left and right
 			return new_denom;
 		}
@@ -236,22 +237,20 @@ double CardinalityEstimator::CalculateUpdatedDenom(Subgraph2Denominator left, Su
 		switch (comparison_type) {
 		case ExpressionType::COMPARE_EQUAL:
 		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
-			// extra ration stays 1
-			extra_ratio = filter.has_tdom_hll ? (double)filter.tdom_hll : (double)filter.tdom_no_hll;
+			// extra ratio stays 1
+			extra_ratio =
+			    filter.has_tdom_hll ? static_cast<double>(filter.tdom_hll) : static_cast<double>(filter.tdom_no_hll);
 			break;
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 		case ExpressionType::COMPARE_LESSTHAN:
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
 		case ExpressionType::COMPARE_GREATERTHAN:
-			// start with the selectivity of equality
-			extra_ratio = filter.has_tdom_hll ? (double)filter.tdom_hll : (double)filter.tdom_no_hll;
-			// now assume every tuple will match 2.5 times (on average)
-			extra_ratio *= static_cast<double>(1) / CardinalityEstimator::DEFAULT_LT_GT_MULTIPLIER;
-			break;
 		case ExpressionType::COMPARE_NOTEQUAL:
 		case ExpressionType::COMPARE_DISTINCT_FROM:
-			// basically assume cross product.
-			extra_ratio = 1;
+			// Assume this blows up, but use the tdom to bound it a bit
+			extra_ratio =
+			    filter.has_tdom_hll ? static_cast<double>(filter.tdom_hll) : static_cast<double>(filter.tdom_no_hll);
+			extra_ratio = pow(extra_ratio, 2.0 / 3.0);
 			break;
 		default:
 			break;
@@ -344,8 +343,8 @@ DenomInfo CardinalityEstimator::GetDenominator(JoinRelationSet &set) {
 			    &set_manager.Union(*subgraph_to_merge_into->relations, *subgraph_to_delete->relations);
 			subgraph_to_merge_into->numerator_relations =
 			    &UpdateNumeratorRelations(*subgraph_to_merge_into, *subgraph_to_delete, edge);
-			subgraph_to_delete->relations = nullptr;
 			subgraph_to_merge_into->denom = CalculateUpdatedDenom(*subgraph_to_merge_into, *subgraph_to_delete, edge);
+			subgraph_to_delete->relations = nullptr;
 			auto remove_start = std::remove_if(subgraphs.begin(), subgraphs.end(),
 			                                   [](Subgraph2Denominator &s) { return !s.relations; });
 			subgraphs.erase(remove_start, subgraphs.end());

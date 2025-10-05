@@ -1,0 +1,1 @@
+SELECT watchid FROM hits;

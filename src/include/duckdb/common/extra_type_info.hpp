@@ -10,6 +10,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/extension_type_info.hpp"
 
 namespace duckdb {
 
@@ -30,13 +31,18 @@ enum class ExtraTypeInfoType : uint8_t {
 };
 
 struct ExtraTypeInfo {
+	ExtraTypeInfoType type;
+	string alias;
+	unique_ptr<ExtensionTypeInfo> extension_info;
+
 	explicit ExtraTypeInfo(ExtraTypeInfoType type);
 	explicit ExtraTypeInfo(ExtraTypeInfoType type, string alias);
 	virtual ~ExtraTypeInfo();
 
-	ExtraTypeInfoType type;
-	string alias;
-	vector<Value> modifiers;
+protected:
+	// copy	constructor (protected)
+	ExtraTypeInfo(const ExtraTypeInfo &other);
+	ExtraTypeInfo &operator=(const ExtraTypeInfo &other);
 
 public:
 	bool Equals(ExtraTypeInfo *other_p) const;
@@ -44,6 +50,7 @@ public:
 	virtual void Serialize(Serializer &serializer) const;
 	static shared_ptr<ExtraTypeInfo> Deserialize(Deserializer &source);
 	virtual shared_ptr<ExtraTypeInfo> Copy() const;
+	virtual shared_ptr<ExtraTypeInfo> DeepCopy() const;
 
 	template <class TARGET>
 	TARGET &Cast() {
@@ -104,6 +111,7 @@ public:
 	void Serialize(Serializer &serializer) const override;
 	static shared_ptr<ExtraTypeInfo> Deserialize(Deserializer &source);
 	shared_ptr<ExtraTypeInfo> Copy() const override;
+	shared_ptr<ExtraTypeInfo> DeepCopy() const override;
 
 protected:
 	bool EqualsInternal(ExtraTypeInfo *other_p) const override;
@@ -121,6 +129,7 @@ public:
 	void Serialize(Serializer &serializer) const override;
 	static shared_ptr<ExtraTypeInfo> Deserialize(Deserializer &deserializer);
 	shared_ptr<ExtraTypeInfo> Copy() const override;
+	shared_ptr<ExtraTypeInfo> DeepCopy() const override;
 
 protected:
 	bool EqualsInternal(ExtraTypeInfo *other_p) const override;
@@ -208,6 +217,7 @@ public:
 	void Serialize(Serializer &serializer) const override;
 	static shared_ptr<ExtraTypeInfo> Deserialize(Deserializer &reader);
 	shared_ptr<ExtraTypeInfo> Copy() const override;
+	shared_ptr<ExtraTypeInfo> DeepCopy() const override;
 
 protected:
 	bool EqualsInternal(ExtraTypeInfo *other_p) const override;
@@ -223,6 +233,7 @@ public:
 	void Serialize(Serializer &serializer) const override;
 	static shared_ptr<ExtraTypeInfo> Deserialize(Deserializer &source);
 	shared_ptr<ExtraTypeInfo> Copy() const override;
+	shared_ptr<ExtraTypeInfo> DeepCopy() const override;
 
 protected:
 	bool EqualsInternal(ExtraTypeInfo *other_p) const override;

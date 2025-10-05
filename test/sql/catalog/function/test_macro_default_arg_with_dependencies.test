@@ -2,7 +2,10 @@
 # group: [function]
 
 statement ok
-set storage_compatibility_version='latest'
+ATTACH '__TEST_DIR__/macro_default_arg.db' (STORAGE_VERSION 'v1.0.0');
+
+statement ok
+USE macro_default_arg
 
 statement ok
 set enable_macro_dependencies=true

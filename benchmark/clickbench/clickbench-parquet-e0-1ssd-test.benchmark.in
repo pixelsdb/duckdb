@@ -1,0 +1,15 @@
+# name: ${FILE_PATH}
+# description: ${DESCRIPTION}
+# group: [clickbench]
+
+require pixels
+
+name Q${QUERY_NUMBER_PADDED}
+group Clickbench
+
+load
+CREATE VIEW hits AS SELECT * FROM parquet_scan(["/data/9a3-01/clickbench/parquet-e0/hits/hits_1.parquet"]);
+
+run benchmark/clickbench/queries-test/q${QUERY_NUMBER_PADDED}.sql
+
+# result benchmark/clickbench/answers/q${QUERY_NUMBER_PADDED}.csv

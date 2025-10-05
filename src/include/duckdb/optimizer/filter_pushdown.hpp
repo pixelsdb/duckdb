@@ -57,6 +57,8 @@ private:
 	unique_ptr<LogicalOperator> PushdownJoin(unique_ptr<LogicalOperator> op);
 	//! Push down a LogicalProjection op
 	unique_ptr<LogicalOperator> PushdownProjection(unique_ptr<LogicalOperator> op);
+	//! Push down a LogicalProjection op
+	unique_ptr<LogicalOperator> PushdownUnnest(unique_ptr<LogicalOperator> op);
 	//! Push down a LogicalSetOperation op
 	unique_ptr<LogicalOperator> PushdownSetOperation(unique_ptr<LogicalOperator> op);
 	//! Push down a LogicalGet op
@@ -94,7 +96,7 @@ private:
 	FilterResult AddFilter(unique_ptr<Expression> expr);
 	//! Extract filter bindings to compare them with expressions in an operator and determine if the filter
 	//! can be pushed down
-	void ExtractFilterBindings(Expression &expr, vector<ColumnBinding> &bindings);
+	void ExtractFilterBindings(const Expression &expr, vector<ColumnBinding> &bindings);
 	//! Generate filters from the current set of filters stored in the FilterCombiner
 	void GenerateFilters();
 	//! if there are filters in this FilterPushdown node, push them into the combiner

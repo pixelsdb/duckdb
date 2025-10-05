@@ -15,16 +15,16 @@
 #include "duckdb/common/progress_bar/progress_bar.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/profiling_info.hpp"
+#include "duckdb/parser/expression/lambda_expression.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 namespace duckdb {
 
 class ClientContext;
 class PhysicalResultCollector;
 class PreparedStatementData;
-class HTTPLogger;
 
-typedef std::function<unique_ptr<PhysicalResultCollector>(ClientContext &context, PreparedStatementData &data)>
-    get_result_collector_t;
+typedef std::function<PhysicalOperator &(ClientContext &context, PreparedStatementData &data)> get_result_collector_t;
 
 struct ClientConfig {
 	//! The home directory used by the system (if any)
@@ -70,6 +70,7 @@ struct ClientConfig {
 	//! Whether or not we should verify the serializer
 	bool verify_serializer = false;
 	//! Enable the running of optimizers
+	// We change it to false for testing, Notice!!!
 	bool enable_optimizer = true;
 	//! Enable caching operators
 	bool enable_caching_operators = true;
@@ -97,10 +98,12 @@ struct ClientConfig {
 	idx_t partitioned_write_flush_threshold = idx_t(1) << idx_t(19);
 	//! The amount of rows we can keep open before we close and flush them during a partitioned write
 	idx_t partitioned_write_max_open_files = idx_t(100);
-	//! The number of rows we need on either table to choose a nested loop join
+	//! The maximum number of rows on either table to choose a nested loop join
 	idx_t nested_loop_join_threshold = 5;
-	//! The number of rows we need on either table to choose a merge join over an IE join
+	//! The maximum number of rows on either table to choose a merge join over an IE join
 	idx_t merge_join_threshold = 1000;
+	//! The maximum number of rows to use the nested loop join implementation
+	idx_t asof_loop_join_threshold = 64;
 
 	//! The maximum amount of memory to keep buffered in a streaming query result. Default: 1mb.
 	idx_t streaming_buffer_size = 1000000;
@@ -117,7 +120,13 @@ struct ClientConfig {
 	//! The threshold at which we switch from using filtered aggregates to LIST with a dedicated pivot operator
 	idx_t pivot_filter_threshold = 20;
 
-	//! Whether or not the "/" division operator defaults to integer division or floating point division
+	//! The maximum amount of OR filters we generate dynamically from a hash join
+	idx_t dynamic_or_filter_threshold = 50;
+
+	//! The maximum amount of rows in the LIMIT/SAMPLE for which we trigger late materialization
+	idx_t late_materialization_max_rows = 50;
+
+	//! Whether the "/" division operator defaults to integer division or floating point division
 	bool integer_division = false;
 	//! When a scalar subquery returns multiple rows - return a random row instead of returning an error
 	bool scalar_subquery_error_on_multiple_rows = true;
@@ -125,6 +134,14 @@ struct ClientConfig {
 	bool ieee_floating_point_ops = true;
 	//! Allow ordering by non-integer literals - ordering by such literals has no effect
 	bool order_by_non_integer_literal = false;
+	//! Disable casting from timestamp => timestamptz (naïve timestamps)
+	bool disable_timestamptz_casts = false;
+	//! If DEFAULT or ENABLE_SINGLE_ARROW, it is possible to use the deprecated single arrow operator (->) for lambda
+	//! functions. Otherwise, DISABLE_SINGLE_ARROW.
+	LambdaSyntax lambda_syntax = LambdaSyntax::DEFAULT;
+	//! The profiling coverage. SELECT is the default behavior, and ALL emits profiling information for all operator
+	//! types.
+	ProfilingCoverage profiling_coverage = ProfilingCoverage::SELECT;
 
 	//! Output error messages as structured JSON instead of as a raw string
 	bool errors_as_json = false;
@@ -135,14 +152,14 @@ struct ClientConfig {
 	//! Variables set by the user
 	case_insensitive_map_t<Value> user_variables;
 
-	//! Function that is used to create the result collector for a materialized result
-	//! Defaults to PhysicalMaterializedCollector
-	get_result_collector_t result_collector = nullptr;
+	//! Function that is used to create the result collector for a materialized result.
+	get_result_collector_t get_result_collector = nullptr;
 
 	//! If HTTP logging is enabled or not.
-	bool enable_http_logging = false;
-	//! The file to save query HTTP logging information to, instead of printing it to the console
-	//! (empty = print to console)
+	bool enable_http_logging = true;
+
+	//! **DEPRECATED** The file to save query HTTP logging information to, instead of printing it to the console
+	//! (empty = output to the DuckDB logger)
 	string http_logging_output;
 
 public:
@@ -168,6 +185,16 @@ public:
 
 	void ResetUserVariable(const string &name) {
 		user_variables.erase(name);
+	}
+
+	template <class OP>
+	static typename OP::RETURN_TYPE GetSetting(const ClientContext &context) {
+		return OP::GetSetting(context).template GetValue<typename OP::RETURN_TYPE>();
+	}
+
+	template <class OP>
+	static Value GetSettingValue(const ClientContext &context) {
+		return OP::GetSetting(context);
 	}
 
 public:

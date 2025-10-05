@@ -57,7 +57,7 @@ void ListColumnData::InitializeScan(ColumnScanState &state) {
 uint64_t ListColumnData::FetchListOffset(idx_t row_idx) {
 	auto segment = data.GetSegment(row_idx);
 	ColumnFetchState fetch_state;
-	Vector result(type, 1);
+	Vector result(LogicalType::UBIGINT, 1);
 	segment->FetchRow(fetch_state, UnsafeNumericCast<row_t>(row_idx), result, 0U);
 
 	// initialize the child scan with the required offset
@@ -94,7 +94,10 @@ idx_t ListColumnData::ScanCommitted(idx_t vector_index, ColumnScanState &state, 
 	return ScanCount(state, result, scan_count);
 }
 
-idx_t ListColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t count) {
+idx_t ListColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t count, idx_t result_offset) {
+	if (result_offset > 0) {
+		throw InternalException("ListColumnData::ScanCount not supported with result_offset > 0");
+	}
 	if (count == 0) {
 		return 0;
 	}
@@ -232,16 +235,17 @@ void ListColumnData::Append(BaseStatistics &stats, ColumnAppendState &state, Vec
 	UnifiedVectorFormat vdata;
 	vdata.sel = FlatVector::IncrementalSelectionVector();
 	vdata.data = data_ptr_cast(append_offsets.get());
+	vdata.physical_type = PhysicalType::UINT64;
 
+	// append the child vector
+	if (child_count > 0) {
+		child_column->Append(ListStats::GetChildStats(stats), state.child_appends[1], child_vector, child_count);
+	}
 	// append the list offsets
 	ColumnData::AppendData(stats, state, vdata, count);
 	// append the validity data
 	vdata.validity = append_mask;
 	validity.AppendData(stats, state.child_appends[0], vdata, count);
-	// append the child vector
-	if (child_count > 0) {
-		child_column->Append(ListStats::GetChildStats(stats), state.child_appends[1], child_vector, child_count);
-	}
 }
 
 void ListColumnData::RevertAppend(row_t start_row) {

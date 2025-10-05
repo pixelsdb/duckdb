@@ -47,8 +47,10 @@ unique_ptr<ParsedExpression> ExpandDefaultExpression(const ColumnDefinition &col
 	}
 }
 
-void ReplaceDefaultExpression(unique_ptr<ParsedExpression> &expr, const ColumnDefinition &column) {
-	D_ASSERT(expr->type == ExpressionType::VALUE_DEFAULT);
+void Binder::TryReplaceDefaultExpression(unique_ptr<ParsedExpression> &expr, const ColumnDefinition &column) {
+	if (expr->GetExpressionType() != ExpressionType::VALUE_DEFAULT) {
+		return;
+	}
 	expr = ExpandDefaultExpression(column);
 }
 
@@ -56,7 +58,7 @@ void ExpressionBinder::DoUpdateSetQualifyInLambda(FunctionExpression &function, 
                                                   vector<unordered_set<string>> &lambda_params) {
 
 	for (auto &child : function.children) {
-		if (child->expression_class != ExpressionClass::LAMBDA) {
+		if (child->GetExpressionClass() != ExpressionClass::LAMBDA) {
 			DoUpdateSetQualify(child, table_name, lambda_params);
 			continue;
 		}
@@ -135,7 +137,7 @@ void ExpressionBinder::DoUpdateSetQualify(unique_ptr<ParsedExpression> &expr, co
 
 // Replace binding.table_index with 'dest' if it's 'source'
 void ReplaceColumnBindings(Expression &expr, idx_t source, idx_t dest) {
-	if (expr.type == ExpressionType::BOUND_COLUMN_REF) {
+	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 		auto &bound_columnref = expr.Cast<BoundColumnRefExpression>();
 		if (bound_columnref.binding.table_index == source) {
 			bound_columnref.binding.table_index = dest;
@@ -148,7 +150,6 @@ void ReplaceColumnBindings(Expression &expr, idx_t source, idx_t dest) {
 void Binder::BindDoUpdateSetExpressions(const string &table_alias, LogicalInsert &insert, UpdateSetInfo &set_info,
                                         TableCatalogEntry &table, TableStorageInfo &storage_info) {
 	D_ASSERT(insert.children.size() == 1);
-	D_ASSERT(insert.children[0]->type == LogicalOperatorType::LOGICAL_PROJECTION);
 
 	vector<column_t> logical_column_ids;
 	vector<string> column_names;
@@ -168,11 +169,16 @@ void Binder::BindDoUpdateSetExpressions(const string &table_alias, LogicalInsert
 		    insert.set_columns.end()) {
 			throw BinderException("Multiple assignments to same column \"%s\"", colname);
 		}
+
+		if (!column.Type().SupportsRegularUpdate()) {
+			insert.update_is_del_and_insert = true;
+		}
+
 		insert.set_columns.push_back(column.Physical());
 		logical_column_ids.push_back(column.Oid());
 		insert.set_types.push_back(column.Type());
 		column_names.push_back(colname);
-		if (expr->type == ExpressionType::VALUE_DEFAULT) {
+		if (expr->GetExpressionType() == ExpressionType::VALUE_DEFAULT) {
 			expr = ExpandDefaultExpression(column);
 		}
 
@@ -197,13 +203,13 @@ void Binder::BindDoUpdateSetExpressions(const string &table_alias, LogicalInsert
 		}
 	}
 
-	// Verify that none of the columns that are targeted with a SET expression are indexed on
+	// If any column targeted by a SET expression has an index, then
+	// we need to rewrite this to an DELETE + INSERT.
 	for (idx_t i = 0; i < logical_column_ids.size(); i++) {
 		auto &column = logical_column_ids[i];
 		if (indexed_columns.count(column)) {
-			throw BinderException("Can not assign to column '%s' because it has a UNIQUE/PRIMARY KEY constraint or is "
-			                      "referenced by an INDEX",
-			                      column_names[i]);
+			insert.update_is_del_and_insert = true;
+			break;
 		}
 	}
 }
@@ -249,6 +255,15 @@ unique_ptr<UpdateSetInfo> CreateSetInfoForReplace(TableCatalogEntry &table, Inse
 	}
 
 	return set_info;
+}
+
+vector<column_t> GetColumnsToFetch(const TableBinding &binding) {
+	auto &bound_columns = binding.GetBoundColumnIds();
+	vector<column_t> result;
+	for (auto &col : bound_columns) {
+		result.push_back(col.GetPrimaryIndex());
+	}
+	return result;
 }
 
 void Binder::BindOnConflictClause(LogicalInsert &insert, TableCatalogEntry &table, InsertStatement &stmt) {
@@ -422,7 +437,7 @@ void Binder::BindOnConflictClause(LogicalInsert &insert, TableCatalogEntry &tabl
 		// of the original table, to execute the expressions
 		D_ASSERT(original_binding->binding_type == BindingType::TABLE);
 		auto &table_binding = original_binding->Cast<TableBinding>();
-		insert.columns_to_fetch = table_binding.GetBoundColumnIds();
+		insert.columns_to_fetch = GetColumnsToFetch(table_binding);
 		return;
 	}
 
@@ -448,7 +463,7 @@ void Binder::BindOnConflictClause(LogicalInsert &insert, TableCatalogEntry &tabl
 	// of the original table, to execute the expressions
 	D_ASSERT(original_binding->binding_type == BindingType::TABLE);
 	auto &table_binding = original_binding->Cast<TableBinding>();
-	insert.columns_to_fetch = table_binding.GetBoundColumnIds();
+	insert.columns_to_fetch = GetColumnsToFetch(table_binding);
 
 	// Replace the column bindings to refer to the child operator
 	for (auto &expr : insert.expressions) {
@@ -458,6 +473,50 @@ void Binder::BindOnConflictClause(LogicalInsert &insert, TableCatalogEntry &tabl
 	// Do the same for the (optional) DO UPDATE condition
 	if (insert.do_update_condition) {
 		ReplaceColumnBindings(*insert.do_update_condition, table_index, projection_index.GetIndex());
+	}
+}
+
+void Binder::BindInsertColumnList(TableCatalogEntry &table, vector<string> &columns, bool default_values,
+                                  vector<LogicalIndex> &named_column_map, vector<LogicalType> &expected_types,
+                                  IndexVector<idx_t, PhysicalIndex> &column_index_map) {
+	if (!columns.empty() || default_values) {
+		// insertion statement specifies column list
+
+		// create a mapping of (list index) -> (column index)
+		case_insensitive_map_t<idx_t> column_name_map;
+		for (idx_t i = 0; i < columns.size(); i++) {
+			auto entry = column_name_map.insert(make_pair(columns[i], i));
+			if (!entry.second) {
+				throw BinderException("Duplicate column name \"%s\" in INSERT", columns[i]);
+			}
+			auto column_index = table.GetColumnIndex(columns[i]);
+			if (column_index.index == COLUMN_IDENTIFIER_ROW_ID) {
+				throw BinderException("Cannot explicitly insert values into rowid column");
+			}
+			auto &col = table.GetColumn(column_index);
+			if (col.Generated()) {
+				throw BinderException("Cannot insert into a generated column");
+			}
+			expected_types.push_back(col.Type());
+			named_column_map.push_back(column_index);
+		}
+		for (auto &col : table.GetColumns().Physical()) {
+			auto entry = column_name_map.find(col.Name());
+			if (entry == column_name_map.end()) {
+				// column not specified, set index to DConstants::INVALID_INDEX
+				column_index_map.push_back(DConstants::INVALID_INDEX);
+			} else {
+				// column was specified, set to the index
+				column_index_map.push_back(entry->second);
+			}
+		}
+	} else {
+		// insert by position and no columns specified - insertion into all columns of the table
+		// intentionally don't populate 'column_index_map' as an indication of this
+		for (auto &col : table.GetColumns().Physical()) {
+			named_column_map.push_back(col.Logical());
+			expected_types.push_back(col.Type());
+		}
 	}
 }
 
@@ -486,6 +545,9 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 		if (values_list) {
 			throw BinderException("INSERT BY NAME can only be used when inserting from a SELECT statement");
 		}
+		if (stmt.default_values) {
+			throw BinderException("INSERT BY NAME cannot be combined with with DEFAULT VALUES");
+		}
 		if (!stmt.columns.empty()) {
 			throw BinderException("INSERT BY NAME cannot be combined with an explicit column list");
 		}
@@ -499,48 +561,13 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 	}
 
 	vector<LogicalIndex> named_column_map;
-	if (!stmt.columns.empty() || stmt.default_values) {
-		// insertion statement specifies column list
-
-		// create a mapping of (list index) -> (column index)
-		case_insensitive_map_t<idx_t> column_name_map;
-		for (idx_t i = 0; i < stmt.columns.size(); i++) {
-			auto entry = column_name_map.insert(make_pair(stmt.columns[i], i));
-			if (!entry.second) {
-				throw BinderException("Duplicate column name \"%s\" in INSERT", stmt.columns[i]);
-			}
-			auto column_index = table.GetColumnIndex(stmt.columns[i]);
-			if (column_index.index == COLUMN_IDENTIFIER_ROW_ID) {
-				throw BinderException("Cannot explicitly insert values into rowid column");
-			}
-			auto &col = table.GetColumn(column_index);
-			if (col.Generated()) {
-				throw BinderException("Cannot insert into a generated column");
-			}
-			insert->expected_types.push_back(col.Type());
-			named_column_map.push_back(column_index);
-		}
-		for (auto &col : table.GetColumns().Physical()) {
-			auto entry = column_name_map.find(col.Name());
-			if (entry == column_name_map.end()) {
-				// column not specified, set index to DConstants::INVALID_INDEX
-				insert->column_index_map.push_back(DConstants::INVALID_INDEX);
-			} else {
-				// column was specified, set to the index
-				insert->column_index_map.push_back(entry->second);
-			}
-		}
-	} else {
-		// insert by position and no columns specified - insertion into all columns of the table
-		// intentionally don't populate 'column_index_map' as an indication of this
-		for (auto &col : table.GetColumns().Physical()) {
-			named_column_map.push_back(col.Logical());
-			insert->expected_types.push_back(col.Type());
-		}
-	}
+	BindInsertColumnList(table, stmt.columns, stmt.default_values, named_column_map, insert->expected_types,
+	                     insert->column_index_map);
 
 	// bind the default values
-	BindDefaultValues(table.GetColumns(), insert->bound_defaults);
+	auto &catalog_name = table.ParentCatalog().GetName();
+	auto &schema_name = table.ParentSchema().name;
+	BindDefaultValues(table.GetColumns(), insert->bound_defaults, catalog_name, schema_name);
 	insert->bound_constraints = BindConstraints(table);
 	if (!stmt.select_statement && !stmt.default_values) {
 		result.plan = std::move(insert);
@@ -571,10 +598,7 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 
 			// now replace any DEFAULT values with the corresponding default expression
 			for (idx_t list_idx = 0; list_idx < expr_list.values.size(); list_idx++) {
-				if (expr_list.values[list_idx][col_idx]->type == ExpressionType::VALUE_DEFAULT) {
-					// DEFAULT value! replace the entry
-					ReplaceDefaultExpression(expr_list.values[list_idx][col_idx], column);
-				}
+				TryReplaceDefaultExpression(expr_list.values[list_idx][col_idx], column);
 			}
 		}
 	}
@@ -601,14 +625,12 @@ BoundStatement Binder::Bind(InsertStatement &stmt) {
 
 	if (!stmt.returning_list.empty()) {
 		insert->return_chunk = true;
-		result.types.clear();
-		result.names.clear();
 		auto insert_table_index = GenerateTableIndex();
 		insert->table_index = insert_table_index;
 		unique_ptr<LogicalOperator> index_as_logicaloperator = std::move(insert);
 
 		return BindReturning(std::move(stmt.returning_list), table, stmt.table_ref ? stmt.table_ref->alias : string(),
-		                     insert_table_index, std::move(index_as_logicaloperator), std::move(result));
+		                     insert_table_index, std::move(index_as_logicaloperator));
 	}
 
 	D_ASSERT(result.types.size() == result.names.size());

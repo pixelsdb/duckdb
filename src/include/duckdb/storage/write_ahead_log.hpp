@@ -38,6 +38,8 @@ class TransactionManager;
 class WriteAheadLogDeserializer;
 struct PersistentCollectionData;
 
+enum class WALInitState { NO_WAL, UNINITIALIZED, UNINITIALIZED_REQUIRES_TRUNCATE, INITIALIZED };
+
 //! The WriteAheadLog (WAL) is a log that is used to provide durability. Prior
 //! to committing a transaction it writes the changes the transaction made to
 //! the database to the log, which can then be replayed upon startup in case the
@@ -45,26 +47,30 @@ struct PersistentCollectionData;
 class WriteAheadLog {
 public:
 	//! Initialize the WAL in the specified directory
-	explicit WriteAheadLog(AttachedDatabase &database, const string &wal_path);
+	explicit WriteAheadLog(AttachedDatabase &database, const string &wal_path, idx_t wal_size = 0ULL,
+	                       WALInitState state = WALInitState::NO_WAL);
 	virtual ~WriteAheadLog();
 
 public:
-	//! Replay the WAL
-	static bool Replay(AttachedDatabase &database, unique_ptr<FileHandle> handle);
+	//! Replay and initialize the WAL
+	static unique_ptr<WriteAheadLog> Replay(FileSystem &fs, AttachedDatabase &database, const string &wal_path);
+
+	AttachedDatabase &GetDatabase();
 
 	//! Gets the total bytes written to the WAL since startup
-	idx_t GetWALSize();
+	idx_t GetWALSize() const;
 	//! Gets the total bytes written to the WAL since startup
-	idx_t GetTotalWritten();
+	idx_t GetTotalWritten() const;
 
 	//! A WAL is initialized, if a writer to a file exists.
-	bool Initialized() {
-		return initialized;
-	}
+	bool Initialized() const;
 	//! Initializes the file of the WAL by creating the file writer.
 	BufferedFileWriter &Initialize();
 
 	void WriteVersion();
+
+	//! Determines if WAL should be encrypted
+	bool IsEncrypted() const;
 
 	virtual void WriteCreateTable(const TableCatalogEntry &entry);
 	void WriteDropTable(const TableCatalogEntry &entry);
@@ -93,7 +99,7 @@ public:
 	//! Sets the table used for subsequent insert/delete/update commands
 	void WriteSetTable(const string &schema, const string &table);
 
-	void WriteAlter(const AlterInfo &info);
+	void WriteAlter(CatalogEntry &entry, const AlterInfo &info);
 
 	void WriteInsert(DataChunk &chunk);
 	void WriteRowGroupData(const PersistentCollectionData &data);
@@ -117,12 +123,15 @@ public:
 	void WriteCheckpoint(MetaBlockPointer meta_block);
 
 protected:
+	static unique_ptr<WriteAheadLog> ReplayInternal(AttachedDatabase &database, unique_ptr<FileHandle> handle);
+
+protected:
 	AttachedDatabase &database;
 	mutex wal_lock;
 	unique_ptr<BufferedFileWriter> writer;
 	string wal_path;
 	atomic<idx_t> wal_size;
-	atomic<bool> initialized;
+	atomic<WALInitState> init_state;
 };
 
 } // namespace duckdb

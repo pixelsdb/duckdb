@@ -17,7 +17,6 @@
 namespace duckdb {
 
 class DuckDB;
-class HTTPLogger;
 
 enum class ExtensionLoadResult : uint8_t { LOADED_EXTENSION = 0, EXTENSION_UNKNOWN = 1, NOT_LOADED = 2 };
 
@@ -35,6 +34,7 @@ struct ExtensionAlias {
 struct ExtensionInitResult {
 	string filename;
 	string filebase;
+	ExtensionABIType abi_type = ExtensionABIType::UNKNOWN;
 
 	// The deserialized install from the `<ext>.duckdb_extension.info` file
 	unique_ptr<ExtensionInstallInfo> install_info;
@@ -122,6 +122,10 @@ public:
 	static string ExtensionDirectory(ClientContext &context);
 	static string ExtensionDirectory(DatabaseInstance &db, FileSystem &fs);
 
+	// Get the extension directory path
+	static string GetExtensionDirectoryPath(ClientContext &context);
+	static string GetExtensionDirectoryPath(DatabaseInstance &db, FileSystem &fs);
+
 	static bool CheckExtensionSignature(FileHandle &handle, ParsedExtensionMetaData &parsed_metadata,
 	                                    const bool allow_community_extensions);
 	static ParsedExtensionMetaData ParseExtensionMetaData(const char *metadata) noexcept;
@@ -173,6 +177,19 @@ public:
 		return result;
 	}
 
+	template <idx_t N>
+	static idx_t ArraySize(const ExtensionEntry (&entries)[N]) {
+		return N;
+	}
+
+	template <idx_t N>
+	static const ExtensionEntry *GetArrayEntry(const ExtensionEntry (&entries)[N], idx_t entry) {
+		if (entry >= N) {
+			return nullptr;
+		}
+		return entries + entry;
+	}
+
 	//! Lookup a name in an ExtensionEntry list
 	template <idx_t N>
 	static string FindExtensionInEntries(const string &name, const ExtensionEntry (&entries)[N]) {
@@ -218,12 +235,12 @@ public:
 
 	static bool IsRelease(const string &version_tag);
 	static bool CreateSuggestions(const string &extension_name, string &message);
+	static string ExtensionInstallDocumentationLink(const string &extension_name);
 
 private:
 	static unique_ptr<ExtensionInstallInfo> InstallExtensionInternal(DatabaseInstance &db, FileSystem &fs,
 	                                                                 const string &local_path, const string &extension,
 	                                                                 ExtensionInstallOptions &options,
-	                                                                 optional_ptr<HTTPLogger> http_logger = nullptr,
 	                                                                 optional_ptr<ClientContext> context = nullptr);
 	static const vector<string> PathComponents();
 	static string DefaultExtensionFolder(FileSystem &fs);

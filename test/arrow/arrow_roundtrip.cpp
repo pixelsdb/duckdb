@@ -48,14 +48,14 @@ TEST_CASE("Test Export Large", "[arrow]") {
 
 	TestArrowRoundtrip("SELECT 'bla'::BLOB FROM range(10000)");
 
-	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)");
+	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)", false, true);
 
 	// Test with Large Buffer Size
 	TestArrowRoundtrip("SELECT 'bla' FROM range(10000)", true);
 
 	TestArrowRoundtrip("SELECT 'bla'::BLOB FROM range(10000)", true);
 
-	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)", true);
+	TestArrowRoundtrip("SELECT '3d038406-6275-4aae-bec1-1235ccdeaade'::UUID FROM range(10000) tbl(i)", true, true);
 }
 
 TEST_CASE("Test arrow roundtrip", "[arrow]") {
@@ -88,7 +88,8 @@ TEST_CASE("Test arrow roundtrip", "[arrow]") {
 #endif
 	TestArrowRoundtrip("SELECT * EXCLUDE(bit,time_tz, varint) REPLACE "
 	                   "(interval (1) seconds AS interval, hugeint::DOUBLE as hugeint, uhugeint::DOUBLE as uhugeint) "
-	                   "FROM test_all_types()");
+	                   "FROM test_all_types()",
+	                   false, true);
 }
 
 TEST_CASE("Test Arrow Extension Types", "[arrow][.]") {
@@ -108,6 +109,11 @@ TEST_CASE("Test Arrow Extension Types", "[arrow][.]") {
 
 	// TIME_TZ
 	TestArrowRoundtrip("SELECT '02:30:00+04'::TIMETZ str FROM range(5) tbl(i)", false, true);
+
+	// VARINT
+	TestArrowRoundtrip("SELECT 85070591730234614260976917445211069672::VARINT str FROM range(5) tbl(i)", false, true);
+
+	TestArrowRoundtrip("SELECT 85070591730234614260976917445211069672::VARINT str FROM range(5) tbl(i)", true, true);
 }
 
 TEST_CASE("Test Arrow Extension Types - JSON", "[arrow][.]") {

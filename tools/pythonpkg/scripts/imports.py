@@ -5,14 +5,29 @@ pyarrow.dataset.Scanner
 pyarrow.dataset.Dataset
 pyarrow.Table
 pyarrow.RecordBatchReader
+pyarrow.ipc.MessageReader
 
 import pandas
 
 pandas.DataFrame
+pandas.Categorical
+pandas.CategoricalDtype
+pandas.Series
 pandas.NaT
 pandas.NA
 pandas.isnull
 pandas.ArrowDtype
+pandas.BooleanDtype
+pandas.UInt8Dtype
+pandas.UInt16Dtype
+pandas.UInt32Dtype
+pandas.UInt64Dtype
+pandas.Int8Dtype
+pandas.Int16Dtype
+pandas.Int32Dtype
+pandas.Int64Dtype
+pandas.Float32Dtype
+pandas.Float64Dtype
 
 import datetime
 
@@ -44,8 +59,8 @@ ipywidgets.FloatProgress
 
 import numpy
 
-numpy.core.multiarray
 numpy.ma.masked
+numpy.ma.masked_array
 numpy.ndarray
 numpy.datetime64
 numpy.generic
@@ -107,3 +122,7 @@ import collections.abc
 
 collections.abc.Iterable
 collections.abc.Mapping
+
+import duckdb.polars_io
+
+duckdb.polars_io.duckdb_source

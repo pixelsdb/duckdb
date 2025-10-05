@@ -65,6 +65,8 @@ static py::list PyTokenize(const string &query) {
 		case SimplifiedTokenType::SIMPLIFIED_TOKEN_COMMENT:
 			tuple[1] = PY_SQL_TOKEN_COMMENT;
 			break;
+		default:
+			break;
 		}
 		result.append(tuple);
 	}
@@ -318,6 +320,15 @@ static void InitializeConnectionMethods(py::module_ &m) {
 	    },
 	    "Interrupt pending operations", py::kw_only(), py::arg("connection") = py::none());
 	m.def(
+	    "query_progress",
+	    [](shared_ptr<DuckDBPyConnection> conn = nullptr) {
+		    if (!conn) {
+			    conn = DuckDBPyConnection::DefaultConnection();
+		    }
+		    return conn->QueryProgress();
+	    },
+	    "Query progress of pending operation", py::kw_only(), py::arg("connection") = py::none());
+	m.def(
 	    "fetchone",
 	    [](shared_ptr<DuckDBPyConnection> conn = nullptr) {
 		    if (!conn) {
@@ -397,14 +408,14 @@ static void InitializeConnectionMethods(py::module_ &m) {
 	    py::arg("date_as_object") = false, py::arg("connection") = py::none());
 	m.def(
 	    "pl",
-	    [](idx_t rows_per_batch, shared_ptr<DuckDBPyConnection> conn = nullptr) {
+	    [](idx_t rows_per_batch, bool lazy, shared_ptr<DuckDBPyConnection> conn = nullptr) {
 		    if (!conn) {
 			    conn = DuckDBPyConnection::DefaultConnection();
 		    }
-		    return conn->FetchPolars(rows_per_batch);
+		    return conn->FetchPolars(rows_per_batch, lazy);
 	    },
 	    "Fetch a result as Polars DataFrame following execute()", py::arg("rows_per_batch") = 1000000, py::kw_only(),
-	    py::arg("connection") = py::none());
+	    py::arg("lazy") = false, py::arg("connection") = py::none());
 	m.def(
 	    "fetch_arrow_table",
 	    [](idx_t rows_per_batch, shared_ptr<DuckDBPyConnection> conn = nullptr) {
@@ -544,14 +555,13 @@ static void InitializeConnectionMethods(py::module_ &m) {
 	    py::arg("connection") = py::none());
 	m.def(
 	    "values",
-	    [](py::object params = py::none(), shared_ptr<DuckDBPyConnection> conn = nullptr) {
+	    [](const py::args &params, shared_ptr<DuckDBPyConnection> conn = nullptr) {
 		    if (!conn) {
 			    conn = DuckDBPyConnection::DefaultConnection();
 		    }
 		    return conn->Values(params);
 	    },
-	    "Create a relation object from the passed values", py::arg("values"), py::kw_only(),
-	    py::arg("connection") = py::none());
+	    "Create a relation object from the passed values", py::kw_only(), py::arg("connection") = py::none());
 	m.def(
 	    "table_function",
 	    [](const string &fname, py::object params = py::list(), shared_ptr<DuckDBPyConnection> conn = nullptr) {
@@ -754,54 +764,14 @@ static void InitializeConnectionMethods(py::module_ &m) {
 	    py::arg("filename") = false, py::arg("hive_partitioning") = false, py::arg("union_by_name") = false,
 	    py::arg("compression") = py::none(), py::arg("connection") = py::none());
 	m.def(
-	    "from_substrait",
-	    [](py::bytes &proto, shared_ptr<DuckDBPyConnection> conn = nullptr) {
-		    if (!conn) {
-			    conn = DuckDBPyConnection::DefaultConnection();
-		    }
-		    return conn->FromSubstrait(proto);
-	    },
-	    "Create a query object from protobuf plan", py::arg("proto"), py::kw_only(),
-	    py::arg("connection") = py::none());
-	m.def(
-	    "get_substrait",
-	    [](const string &query, bool enable_optimizer = true, shared_ptr<DuckDBPyConnection> conn = nullptr) {
-		    if (!conn) {
-			    conn = DuckDBPyConnection::DefaultConnection();
-		    }
-		    return conn->GetSubstrait(query, enable_optimizer);
-	    },
-	    "Serialize a query to protobuf", py::arg("query"), py::kw_only(), py::arg("enable_optimizer") = true,
-	    py::arg("connection") = py::none());
-	m.def(
-	    "get_substrait_json",
-	    [](const string &query, bool enable_optimizer = true, shared_ptr<DuckDBPyConnection> conn = nullptr) {
-		    if (!conn) {
-			    conn = DuckDBPyConnection::DefaultConnection();
-		    }
-		    return conn->GetSubstraitJSON(query, enable_optimizer);
-	    },
-	    "Serialize a query to protobuf on the JSON format", py::arg("query"), py::kw_only(),
-	    py::arg("enable_optimizer") = true, py::arg("connection") = py::none());
-	m.def(
-	    "from_substrait_json",
-	    [](const string &json, shared_ptr<DuckDBPyConnection> conn = nullptr) {
-		    if (!conn) {
-			    conn = DuckDBPyConnection::DefaultConnection();
-		    }
-		    return conn->FromSubstraitJSON(json);
-	    },
-	    "Create a query object from a JSON protobuf plan", py::arg("json"), py::kw_only(),
-	    py::arg("connection") = py::none());
-	m.def(
 	    "get_table_names",
-	    [](const string &query, shared_ptr<DuckDBPyConnection> conn = nullptr) {
+	    [](const string &query, bool qualified, shared_ptr<DuckDBPyConnection> conn = nullptr) {
 		    if (!conn) {
 			    conn = DuckDBPyConnection::DefaultConnection();
 		    }
-		    return conn->GetTableNames(query);
+		    return conn->GetTableNames(query, qualified);
 	    },
-	    "Extract the required table names from a query", py::arg("query"), py::kw_only(),
+	    "Extract the required table names from a query", py::arg("query"), py::kw_only(), py::arg("qualified") = false,
 	    py::arg("connection") = py::none());
 	m.def(
 	    "install_extension",
@@ -1078,7 +1048,12 @@ PYBIND11_MODULE(DUCKDB_PYTHON_LIB_NAME, m) { // NOLINT
 	m.attr("__git_revision__") = DuckDB::SourceID();
 	m.attr("__interactive__") = DuckDBPyConnection::DetectAndGetEnvironment();
 	m.attr("__jupyter__") = DuckDBPyConnection::IsJupyter();
-	m.attr("default_connection") = DuckDBPyConnection::DefaultConnection();
+	m.attr("__formatted_python_version__") = DuckDBPyConnection::FormattedPythonVersion();
+	m.def("default_connection", &DuckDBPyConnection::DefaultConnection,
+	      "Retrieve the connection currently registered as the default to be used by the module");
+	m.def("set_default_connection", &DuckDBPyConnection::SetDefaultConnection,
+	      "Register the provided connection as the default to be used by the module",
+	      py::arg("connection").none(false));
 	m.attr("apilevel") = "2.0";
 	m.attr("threadsafety") = 1;
 	m.attr("paramstyle") = "qmark";
